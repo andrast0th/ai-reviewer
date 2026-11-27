@@ -169,6 +169,21 @@ async function checkJira(ctx: CheckContext): Promise<CheckResult> {
   } catch (err) {
     return { service: "jira", status: "fail", lines: [...lines, describeError(err)] };
   }
+  if (jira.acceptanceCriteriaField) {
+    try {
+      const f = (await client.fields()).find((x) => x.id === jira.acceptanceCriteriaField);
+      if (f) lines.push(`acceptance criteria field: ${f.id} ("${f.name}")`);
+      else {
+        status = "warn";
+        lines.push(
+          `acceptance criteria field ${jira.acceptanceCriteriaField} does not exist in Jira`,
+        );
+      }
+    } catch (err) {
+      status = "warn";
+      lines.push(`could not list Jira fields: ${describeError(err)}`);
+    }
+  }
   return { service: "jira", status, lines };
 }
 

@@ -27,6 +27,8 @@ export interface JiraConfig {
   url: string;
   keyPattern: string;
   acceptanceCriteriaField: string;
+  /** Project keys to accept (e.g. ["BANK"]). Empty = any key the pattern finds. */
+  projects: string[];
 }
 
 export interface SonarConfig {
@@ -136,7 +138,8 @@ export function parseConfig(text: string, file: string, env: Env): Config {
   const gitlabT = optionalTable(root, "gitlab");
   if (gitlabT) checkKeys(gitlabT, "gitlab", ["url", "workspace", "ssh_host"]);
   const jiraT = optionalTable(root, "jira");
-  if (jiraT) checkKeys(jiraT, "jira", ["url", "key_pattern", "acceptance_criteria_field"]);
+  if (jiraT)
+    checkKeys(jiraT, "jira", ["url", "key_pattern", "acceptance_criteria_field", "projects"]);
   const sonarT = optionalTable(root, "sonar");
   if (sonarT) checkKeys(sonarT, "sonar", ["url", "enabled"]);
   const reviewT = optionalTable(root, "review") ?? {};
@@ -178,6 +181,7 @@ export function parseConfig(text: string, file: string, env: Env): Config {
       url: serviceUrl(reqStr(jiraT, "jira", "url"), "jira.url"),
       keyPattern,
       acceptanceCriteriaField: optStr(jiraT, "jira", "acceptance_criteria_field", ""),
+      projects: jiraProjects(jiraT),
     };
   }
 
@@ -217,6 +221,15 @@ export function parseConfig(text: string, file: string, env: Env): Config {
 }
 
 // ---------------------------------------------------------------- helpers
+
+function jiraProjects(t: Table): string[] {
+  const list = strList(t, "jira", "projects", []).map((p) => p.trim().toUpperCase());
+  for (const p of list) {
+    if (!/^[A-Z][A-Z0-9_]*$/.test(p))
+      throw new ConfigError(`jira.projects: '${p}' is not a Jira project key`);
+  }
+  return list;
+}
 
 function isTable(v: unknown): v is Table {
   return typeof v === "object" && v !== null && !Array.isArray(v) && !(v instanceof Date);

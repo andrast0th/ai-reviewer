@@ -4,7 +4,7 @@ A local CLI that reviews GitLab merge requests with the company's internal, self
 Code goes only to the internal LLM; nothing is sent to third parties. See `CLAUDE.md` for the
 full design.
 
-Status: **milestone 3**: `check`, `review <mr_url>`, `review-local` and `context`. Nothing is written to GitLab yet (draft reviews come in milestone 8).
+Status: **milestone 4**: `check`, `review <mr_url>`, `review-local` and `context`, with Jira ticket intent. Nothing is written to GitLab yet (draft reviews come in milestone 8).
 
 ## Requirements
 
@@ -96,6 +96,22 @@ mr-reviewer context https://gitlab.example.com/group/repo/-/merge_requests/123 -
 ```
 
 This writes `./reviews/<group-repo>-<iid>-<sha>.prompts.md`. It contains code, so keep it local.
+
+## Jira ticket
+
+With a `[jira]` section (Data Center, `JIRA_TOKEN` PAT), reviews look up the ticket the change is for and give it to
+the model as intent: summary, type, description and, if `jira.acceptance_criteria_field` is set, the acceptance
+criteria. The model can then flag code that contradicts the ticket (`intent-mismatch`).
+
+- Keys are found with `jira.key_pattern` in the MR title, then the source branch, then the description. For
+  `review-local`, the branch name and then the commit subjects are searched. Up to three candidates are tried;
+  ones that don't exist are skipped.
+- `jira.projects = ["BANK"]` restricts which project keys count. Without it, look-alikes such as `UTF-8` or
+  `SHA-256` are ignored.
+- `--ticket BANK-12` uses that issue and skips the search.
+- Jira is optional. If there's no key, no token, or Jira fails, the review still runs, and the report's Ticket row
+  (plus a note) says why. The tool only ever reads from Jira.
+- `mr-reviewer check` confirms that the acceptance-criteria field exists.
 
 ## Review a local branch
 

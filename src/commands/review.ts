@@ -12,6 +12,14 @@ import { planFile, reviewFiles } from "../review/engine.ts";
 import { type Intent, PROMPT_VERSION } from "../review/prompts.ts";
 import { type CollectedFiles, changedFromMrDiffs, collectFiles } from "../review/sources.ts";
 import { fence } from "../text.ts";
+import {
+  resolveTicket,
+  type TicketDeps,
+  type TicketResult,
+  ticketCandidates,
+  ticketCell,
+  ticketIntent,
+} from "../ticket.ts";
 import { syncMrRepo } from "../workspace.ts";
 import { createLlm, detectContext } from "./common.ts";
 
@@ -19,6 +27,9 @@ export interface MrDeps {
   cfg: Config;
   log: Logger;
   gitlabToken: string | undefined;
+  jiraToken?: string | undefined;
+  /** --ticket: use this Jira key instead of searching the MR. */
+  ticketOverride?: string | undefined;
   apiKey: string;
   toolVersion: string;
   fetch?: FetchFn;
@@ -31,6 +42,7 @@ export interface LoadedMr extends CollectedFiles {
   project: GitlabProject;
   mr: MergeRequest;
   intent: Intent;
+  ticket: TicketResult;
 }
 
 function requireGitlab(deps: MrDeps): { gitlab: GitlabConfig; token: string } {
@@ -77,13 +89,22 @@ export async function loadMr(refArgs: readonly string[], deps: MrDeps): Promise<
     deps.cfg.review.exclude,
     presetSkips,
   );
-  return {
-    ref,
-    project,
-    mr,
-    intent: { title: mr.title, description: mr.description },
-    ...collected,
+  const ticketDeps: TicketDeps = { jira: deps.cfg.jira, token: deps.jiraToken, log: deps.log };
+  if (deps.fetch) ticketDeps.fetch = deps.fetch;
+  const ticket = await resolveTicket(
+    ticketCandidates(deps.cfg.jira, deps.ticketOverride, [
+      mr.title,
+      mr.sourceBranch,
+      mr.description,
+    ]),
+    ticketDeps,
+  );
+  const intent: Intent = {
+    title: mr.title,
+    description: mr.description,
+    ticket: ticket.ticket ? ticketIntent(ticket.ticket) : undefined,
   };
+  return { ref, project, mr, intent, ticket, ...collected };
 }
 
 export interface ReviewArgs {
@@ -122,6 +143,7 @@ export async function reviewMr(args: ReviewArgs, deps: MrDeps): Promise<ReviewOu
 
   const warnings: string[] = [];
   if (mr.state && mr.state !== "opened") warnings.push(`the merge request is ${mr.state}.`);
+  if (loaded.ticket.warning) warnings.push(loaded.ticket.warning);
   if (loaded.files.length === 0) warnings.push("no reviewable changes in this merge request.");
   const refs = mr.diffRefs;
   const report = renderReport({
@@ -135,6 +157,7 @@ export async function reviewMr(args: ReviewArgs, deps: MrDeps): Promise<ReviewOu
           `\`${mr.sourceBranch}\` → \`${mr.targetBranch}\`${mr.draft ? " (draft)" : ""}`,
         ],
         ["Author", mr.author || "unknown"],
+        ["Ticket", ticketCell(loaded.ticket)],
         ["Commits", `base \`${refs.baseSha.slice(0, 12)}\`, head \`${refs.headSha.slice(0, 12)}\``],
       ],
       warnings,
@@ -171,6 +194,7 @@ export async function dumpContext(
     `# Prompts for !${loaded.mr.iid}: ${loaded.mr.title}`,
     "",
     `Prompt version \`${PROMPT_VERSION}\`, model \`${cfg.llm.model}\`, budget from llm.max_context_tokens = ${cfg.llm.maxContextTokens}.`,
+    `Ticket: ${ticketCell(loaded.ticket)}`,
     "This file contains code from the repository. Keep it local.",
     "",
   ];

@@ -156,6 +156,22 @@ export class GitRepo {
     ]);
   }
 
+  /** Subjects of non-merge commits in base..head, newest first (at most 50). */
+  async commitSubjects(base: string, head: string): Promise<string[]> {
+    const out = await this.git([
+      "log",
+      "--no-merges",
+      "--format=%s",
+      "-n",
+      "50",
+      `${base}..${head}`,
+    ]);
+    return out
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
   /** File content at a commit (not the working tree). */
   async showFile(rev: string, path: string): Promise<string> {
     return this.git(["show", `${rev}:${path}`]);

@@ -1,0 +1,4 @@
+[
+  { "id": "summary", "name": "Summary", "custom": false },
+  { "id": "customfield_10042", "name": "Acceptance Criteria", "custom": true }
+]

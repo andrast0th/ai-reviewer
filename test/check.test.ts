@@ -16,6 +16,7 @@ url = "https://gitlab.test"
 
 [jira]
 url = "https://jira.test"
+acceptance_criteria_field = "customfield_10042"
 
 [sonar]
 url = "https://sonar.test"
@@ -40,6 +41,7 @@ function routes(overrides: Record<string, unknown> = {}) {
     },
     "GET https://jira.test/rest/api/2/myself": { json: fixtureJson("jira/myself.json") },
     "GET https://jira.test/rest/api/2/serverInfo": { json: fixtureJson("jira/serverInfo.json") },
+    "GET https://jira.test/rest/api/2/field": { json: fixtureJson("jira/fields.json") },
     "GET https://sonar.test/api/authentication/validate": {
       json: fixtureJson("sonar/validate.json"),
     },
@@ -103,6 +105,7 @@ describe("mr-reviewer check", () => {
     assert.match(r.out, /SSH ok \(git@gitlab\.test as test\.user\)/);
     assert.match(r.out, /✓ jira {3}https:\/\/jira\.test/);
     assert.match(r.out, /✓ sonar {2}https:\/\/sonar\.test/);
+    assert.match(r.out, /acceptance criteria field: customfield_10042 \("Acceptance Criteria"\)/);
     assert.match(r.out, /edition: developer \(MR\/branch analysis available\)/);
     for (const secret of Object.values(ENV)) {
       assert.ok(!(r.out + r.err).includes(secret), `output leaked ${secret}`);

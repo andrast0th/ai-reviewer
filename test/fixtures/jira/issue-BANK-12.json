@@ -1,0 +1,12 @@
+{
+  "id": "10012",
+  "key": "BANK-12",
+  "self": "https://jira.test/rest/api/2/issue/10012",
+  "fields": {
+    "summary": "Persist accounts after a transfer",
+    "description": "h2. Context\nTransfers currently update balances in memory only.\n\n{code:java}\nrepo.save(account);\n{code}\nSee [the runbook|https://wiki.test/runbook].",
+    "issuetype": { "name": "Story" },
+    "status": { "name": "In Progress" },
+    "customfield_10042": "* Both accounts are saved in one transaction\n* A failed save leaves both balances unchanged"
+  }
+}

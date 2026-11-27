@@ -20,6 +20,7 @@ workspace = "~/.cache/mr-reviewer/repos"
 url = "https://jira.example.com"
 key_pattern = "[A-Z][A-Z0-9]+-\\d+"
 acceptance_criteria_field = ""   # optional, e.g. "customfield_10042"
+projects = []                    # optional allowlist of project keys, e.g. ["BANK", "PAY"]
 
 # Optional.
 [sonar]

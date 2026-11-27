@@ -7,8 +7,15 @@ import type { FetchFn } from "../http.ts";
 import type { Logger } from "../log.ts";
 import { localReportPath, renderReport } from "../report/markdown.ts";
 import { reviewFiles } from "../review/engine.ts";
-import { PROMPT_VERSION } from "../review/prompts.ts";
+import { type Intent, PROMPT_VERSION } from "../review/prompts.ts";
 import { collectLocalChange } from "../review/sources.ts";
+import {
+  resolveTicket,
+  type TicketDeps,
+  ticketCandidates,
+  ticketCell,
+  ticketIntent,
+} from "../ticket.ts";
 import { createLlm, detectContext } from "./common.ts";
 
 export interface ReviewLocalArgs {
@@ -26,6 +33,9 @@ export interface ReviewLocalDeps {
   fetch?: FetchFn;
   git?: GitRunner;
   now?: () => Date;
+  jiraToken?: string | undefined;
+  /** --ticket: use this Jira key instead of searching the branch and commits. */
+  ticketOverride?: string | undefined;
 }
 
 export interface ReviewLocalOutcome {
@@ -45,6 +55,20 @@ export async function reviewLocal(
     `${change.files.length} file(s) to review, ${change.skipped.length} skipped (base ${args.baseRef} @ ${change.baseSha.slice(0, 8)}, head ${change.headSha.slice(0, 8)})`,
   );
 
+  // Intent for a local branch: branch name + commit subjects, plus the ticket they mention.
+  const subjects = await repo.commitSubjects(change.baseSha, change.headSha);
+  const ticketDeps: TicketDeps = { jira: cfg.jira, token: deps.jiraToken, log };
+  if (deps.fetch) ticketDeps.fetch = deps.fetch;
+  const ticket = await resolveTicket(
+    ticketCandidates(cfg.jira, deps.ticketOverride, [change.branch ?? "", ...subjects]),
+    ticketDeps,
+  );
+  const intent: Intent = {
+    title: change.branch ?? "",
+    description: subjects.length > 0 ? `Commits:\n${subjects.map((s) => `- ${s}`).join("\n")}` : "",
+    ticket: ticket.ticket ? ticketIntent(ticket.ticket) : undefined,
+  };
+
   const llm = createLlm(cfg, deps.apiKey, log, deps.fetch);
   const ctx =
     change.files.length > 0
@@ -59,12 +83,14 @@ export async function reviewLocal(
     maxFindings: args.maxFindings,
     estimator: charsPerToken(),
     log,
+    intent,
   });
 
   const warnings: string[] = [];
   if (change.dirty)
     warnings.push("the work tree has uncommitted changes; only committed changes were reviewed.");
   if (change.files.length === 0) warnings.push("no reviewable changes between the base and HEAD.");
+  if (ticket.warning) warnings.push(ticket.warning);
   const report = renderReport({
     meta: {
       title: `Review of ${change.branch ?? "HEAD"} (local)`,
@@ -72,6 +98,7 @@ export async function reviewLocal(
         ["Repository", change.repoDir],
         ["Base", `\`${args.baseRef}\` (merge-base \`${change.baseSha.slice(0, 12)}\`)`],
         ["Head", `\`${change.branch ?? "HEAD"}\` @ \`${change.headSha.slice(0, 12)}\``],
+        ["Ticket", ticketCell(ticket)],
       ],
       warnings,
       model: cfg.llm.model,

@@ -55,7 +55,8 @@ src/
   diff.ts               # unified-diff parser (hunks, old/new line numbers, changed lines)
   text.ts               # small shared text helpers (Markdown fences)
   commands/             # one module per CLI command (review.ts, reviewLocal.ts, common.ts)
-  jira.ts               # find issue key, fetch summary/description/(opt) acceptance criteria field
+  jira.ts               # Jira DC client: issue (summary, description, type, status, AC field), fields; wiki-markup cleanup
+  ticket.ts             # find issue keys, resolve the ticket (fail soft), report cell
   sonar.ts              # (opt) fetch issues/hotspots for branch/MR; (opt) run sonar-scanner
   llm.ts                # OpenAI-compatible chat client, JSON extraction, retries
   context/
@@ -83,7 +84,7 @@ test/
 Input is a pasted MR URL, e.g. `https://gitlab.example.com/group/sub/repo/-/merge_requests/123`. `<project_path> <iid>` is accepted as well. One MR per run.
 
 1. **GitLab:** fetch the MR (title, description, source/target branch, `diff_refs`: `base_sha`, `start_sha`, `head_sha`) and its diffs (`GET /projects/:id/merge_requests/:iid/diffs`, paginated). Get the diffs (`-U15`) and full files from a local clone: a **bare** clone over **SSH** with the user's existing keys (`ssh_url_to_repo` from the project API, which must point at `gitlab.ssh_host`) in the cache workspace, made once; later runs `git fetch` the target branch and `refs/merge-requests/<iid>/head` (works for forks). Diffs and files are read straight from commits (`git diff base_sha head_sha`, `git show head_sha:path`), so no worktree is needed yet; one is added in milestone 6 when repomix needs files on disk. GitLab's diffs API decides _which_ files changed (and flags generated files); the local clone supplies the content. The MR title and description go into the prompt as intent.
-2. **Jira (Data Center):** pull the issue key from the MR title, branch name or description (regex is configurable, default `[A-Z][A-Z0-9]+-\d+`). Fetch the summary and description, plus the acceptance criteria field if one is configured. Acceptance criteria are rare and inconsistent, so the summary and description are the main sources of intent. If there's no key or the fetch fails, carry on without it and say so in the report.
+2. **Jira (Data Center):** pull the issue key from the MR title, branch name or description (regex is configurable, default `[A-Z][A-Z0-9]+-\d+`). Fetch the summary and description, plus the acceptance criteria field if one is configured. Acceptance criteria are rare and inconsistent, so the summary and description are the main sources of intent. Candidates are tried in order (title, branch, description; for `review-local`: branch, then commit subjects), at most three, skipping 404s; `jira.projects` restricts project keys, and common false positives (UTF-8, SHA-256, ISO-8859, ...) are ignored. `--ticket KEY` overrides the search. Wiki markup is lightly cleaned; acceptance-criteria fields are read whether they hold a string, a list, option objects or checklist items. If there's no key or the fetch fails, carry on without it and say so in the report (fail soft). The ticket goes into the prompt as intent, with an `intent-mismatch` category for code in the file that contradicts it.
 3. **Sonar (optional, `--sonar`):** fetch existing issues for the MR or branch (`/api/issues/search`, plus `/api/hotspots/search`). Optionally run `sonar-scanner` locally first (`--sonar-scan`). Sonar findings go into the report and into the prompt as "already known, don't repeat". The edition and whether CI analyses MRs are unknown; `check` should report the server version and what the API allows.
 4. **Context building, in priority order, stopping at the token budget:**
    1. ticket intent and the MR description
@@ -187,6 +188,7 @@ workspace = "~/.cache/mr-reviewer/repos"
 url = "https://jira.example.com"
 key_pattern = "[A-Z][A-Z0-9]+-\\d+"
 acceptance_criteria_field = ""   # optional, e.g. "customfield_10042"
+projects = []                    # optional allowlist, e.g. ["BANK", "PAY"]
 
 [sonar]
 url = "https://sonar.example.com"
@@ -212,7 +214,7 @@ Env: `LLM_API_KEY`, `GITLAB_TOKEN`, `JIRA_TOKEN`, `SONAR_TOKEN`.
 ## CLI (target)
 
 ```
-mr-reviewer review <mr_url> [--sonar] [--sonar-scan] [--no-verify] [--draft] [--max-findings N]
+mr-reviewer review <mr_url> [--sonar] [--sonar-scan] [--no-verify] [--draft] [--max-findings N] [--ticket KEY]
 mr-reviewer review <project_path> <iid> [...same flags]
 mr-reviewer review-local <repo_path> --base origin/main      # same engine on a local branch, no GitLab
 mr-reviewer check                                           # connectivity + auth + versions for every configured service, detected LLM context size
@@ -228,7 +230,7 @@ Without `--draft`, nothing is written to GitLab. Install locally with `npm link`
 1. **Skeleton:** `package.json`, `tsconfig.json`, Biome, the bin bootstrap (proxy and CA), config, `http.ts`, `llm.ts` with JSON extraction, and `mr-reviewer check`.
 2. **`review-local`:** git diff, filters, the built-in packer, per-file pass, quote validation, Markdown report. Usable without any integrations.
 3. **GitLab read:** MR URL parsing, MR fetch, diffs, SSH bare clone + fetch, `review <mr_url>`, `context --dump`, SSH probe in `check`.
-4. **Jira (DC):** key extraction, issue fetch, intent in the prompt.
+4. **Jira (DC):** key extraction, issue fetch, intent in the prompt, `--ticket`, AC-field check in `check`.
 5. **Verification and cross-file passes** (including intent-mismatch and missing-tests), dedupe, ranking.
 6. **Neighbours and repomix `--compress`**, plus a token budget that drops layers.
 7. **Sonar:** fetch, then an optional local scan. Scope depends on the edition, once known.

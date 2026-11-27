@@ -24,8 +24,9 @@ import {
   type SecretName,
 } from "./secrets.ts";
 import type { SshRunner } from "./ssh.ts";
+import { TICKET_KEY_RE } from "./ticket.ts";
 
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";
 
 const USAGE = `Usage: mr-reviewer <command> [options]
 
@@ -41,6 +42,7 @@ Review options:
   --base <ref>          review-local: branch or commit to compare against (default: origin/main)
   --max-findings <n>    Cap on reported findings (default: review.max_findings)
   --out <dir>           Where to write the report (default: ./reviews)
+  --ticket <KEY>        Use this Jira issue instead of searching titles, branches and commits
 
 Global options:
   --config <path>   Config file (default: $MR_REVIEWER_CONFIG or ~/.config/mr-reviewer/config.toml)
@@ -129,6 +131,10 @@ export async function main(io: Io): Promise<number> {
       throw new UsageError(`usage: mr-reviewer ${command} <mr_url> | <project_path> <iid>`);
     }
     const maxFindings = parseMaxFindings(values["max-findings"]);
+    const ticketOverride = values.ticket?.trim().toUpperCase();
+    if (ticketOverride !== undefined && !TICKET_KEY_RE.test(ticketOverride)) {
+      throw new UsageError(`--ticket must be a Jira key like BANK-12, not '${values.ticket}'`);
+    }
 
     const cfg = await loadConfig(resolveConfigPath(values.config, io.env), io.env);
     const net = await setupNetwork(cfg.network, io.network);
@@ -155,6 +161,8 @@ export async function main(io: Io): Promise<number> {
         cfg,
         log,
         gitlabToken: secrets.GITLAB_TOKEN?.value,
+        jiraToken: secrets.JIRA_TOKEN?.value,
+        ticketOverride,
         apiKey: secrets.LLM_API_KEY?.value ?? "",
         toolVersion: VERSION,
       };
@@ -183,6 +191,8 @@ export async function main(io: Io): Promise<number> {
       const deps: Parameters<typeof reviewLocal>[1] = {
         cfg,
         log,
+        jiraToken: secrets.JIRA_TOKEN?.value,
+        ticketOverride,
         apiKey: secrets.LLM_API_KEY?.value ?? "",
         toolVersion: VERSION,
       };
@@ -236,6 +246,7 @@ function parse(argv: readonly string[]) {
       "max-findings": { type: "string" },
       out: { type: "string" },
       dump: { type: "boolean" },
+      ticket: { type: "string" },
     },
   });
 }

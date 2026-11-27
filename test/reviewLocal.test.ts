@@ -255,6 +255,9 @@ describe("mr-reviewer review-local", () => {
     assert.match(java, /\+ {4}repo\.save\(a\);/);
     assert.match(java, /## Full file after the change\n\n```java\npackage com\.acme\.bank;/);
     assert.match(java, /pay particular attention to:\n- resources/);
+    // Local intent: branch name and commit subjects.
+    assert.match(java, /Change title: feature\/BANK-1-save/);
+    assert.match(java, /Commits:\n- save accounts after transfer/);
   });
 
   it("caps findings with --max-findings and notes uncommitted changes", async () => {
