@@ -1,5 +1,6 @@
 import { mapLimit } from "../concurrency.ts";
 import { chunkFileChange, languageOf } from "../context/builder.ts";
+import type { Neighbour, RelatedContext } from "../context/related.ts";
 import { SAFETY_MARGIN, type TokenEstimator } from "../context/tokens.ts";
 import { changedNewLines, type FileDiff } from "../diff.ts";
 import { ConfigError, HttpError, LlmError } from "../errors.ts";
@@ -62,6 +63,14 @@ export interface ReviewStats {
     error?: string;
   };
   verify: { ran: boolean; checked: number; rejected: number; unverified: number };
+  context: {
+    packer: RelatedContext["packer"];
+    /** Files whose prompt got at least one neighbour. */
+    filesWithNeighbours: number;
+    neighboursIncluded: number;
+    neighboursDropped: number;
+    filesWithConventions: number;
+  };
 }
 
 export interface ReviewResult {
@@ -102,18 +111,50 @@ export interface EngineOptions {
   crossFile?: boolean;
   /** Files that were not reviewed; named in the cross-file summary. */
   skipped?: readonly SkippedFile[];
+  /** Neighbour signatures and conventions (milestone 6), prepared up front. */
+  related?: RelatedContext | undefined;
 }
 
 /** What planning a file's requests needs (no LLM): shared with `context --dump`. */
 export type PlanOptions = Pick<
   EngineOptions,
-  "contextTokens" | "maxOutputTokens" | "estimator" | "intent"
+  "contextTokens" | "maxOutputTokens" | "estimator" | "intent" | "related"
 >;
 
 export interface FilePlan {
   requests: ChatMessage[][];
   withoutFullFile: boolean;
   split: boolean;
+  /** Neighbour signatures that made it into the prompt / were left out for budget. */
+  neighboursIncluded: number;
+  neighboursDropped: number;
+  conventionsIncluded: boolean;
+}
+
+/**
+ * Fill what's left of the budget with the lower layers, in priority order: neighbour
+ * signatures (imports first), then the conventions file. Each item goes in whole or not at all.
+ */
+function fitLowerLayers(
+  file: ReviewFile,
+  remaining: number,
+  opts: PlanOptions,
+): { related: Neighbour[]; conventions: string | undefined; dropped: number } {
+  const candidates = opts.related?.neighbours.get(file.path) ?? [];
+  const related: Neighbour[] = [];
+  let left = remaining;
+  let dropped = 0;
+  for (const n of candidates) {
+    const cost = opts.estimator.estimate(n.text) + opts.estimator.estimate(n.path) + 16;
+    if (cost <= left) {
+      related.push(n);
+      left -= cost;
+    } else dropped++;
+  }
+  const conv = opts.related?.conventions;
+  const convCost = conv ? opts.estimator.estimate(conv) + 64 : 0;
+  const conventions = conv && convCost <= left ? conv : undefined;
+  return { related, conventions, dropped };
 }
 
 const MIN_BUDGET_TOKENS = 512;
@@ -134,6 +175,9 @@ interface FileOutcome {
   unmatched: number;
   withoutFullFile: boolean;
   split: boolean;
+  neighboursIncluded: number;
+  neighboursDropped: number;
+  conventionsIncluded: boolean;
 }
 
 /** Tokens left for diff + file in one request, after the template and the reserved output. */
@@ -163,6 +207,20 @@ export function planFile(file: ReviewFile, opts: PlanOptions): FilePlan {
   }
   const chunks = chunkFileChange(file.diff, file.content, budget, opts.estimator);
   const lang = languageOf(file.path);
+  // Lower layers only go in when the higher ones (diff + full file) fit in one request.
+  const single = chunks.length === 1 && chunks[0]?.withFullFile === true;
+  const remaining = single
+    ? budget -
+      opts.estimator.estimate(chunks[0]?.diff ?? "") -
+      opts.estimator.estimate(file.content)
+    : 0;
+  const lower = single
+    ? fitLowerLayers(file, remaining, opts)
+    : {
+        related: [],
+        conventions: undefined,
+        dropped: opts.related?.neighbours.get(file.path)?.length ?? 0,
+      };
   return {
     requests: chunks.map((c) =>
       perFilePrompt({
@@ -173,10 +231,15 @@ export function planFile(file: ReviewFile, opts: PlanOptions): FilePlan {
         part: c.part,
         parts: c.parts,
         intent: opts.intent,
+        related: lower.related,
+        conventions: lower.conventions,
       }),
     ),
     withoutFullFile: chunks.some((c) => !c.withFullFile),
     split: chunks.length > 1,
+    neighboursIncluded: lower.related.length,
+    neighboursDropped: lower.dropped,
+    conventionsIncluded: lower.conventions !== undefined,
   };
 }
 
@@ -191,6 +254,9 @@ async function reviewOne(file: ReviewFile, opts: EngineOptions): Promise<FileOut
     unmatched: 0,
     withoutFullFile: plan.withoutFullFile,
     split: plan.split,
+    neighboursIncluded: plan.neighboursIncluded,
+    neighboursDropped: plan.neighboursDropped,
+    conventionsIncluded: plan.conventionsIncluded,
   };
   for (const messages of plan.requests) {
     out.calls++;
@@ -345,6 +411,13 @@ export async function reviewFiles(
       capped: ranked.findings.length - verify.rejected - findings.length,
       withoutFullFile: outcomes.filter((o) => o.withoutFullFile).length,
       split: outcomes.filter((o) => o.split).length,
+      context: {
+        packer: opts.related?.packer ?? "none",
+        filesWithNeighbours: outcomes.filter((o) => o.neighboursIncluded > 0).length,
+        neighboursIncluded: outcomes.reduce((n, o) => n + o.neighboursIncluded, 0),
+        neighboursDropped: outcomes.reduce((n, o) => n + o.neighboursDropped, 0),
+        filesWithConventions: outcomes.filter((o) => o.conventionsIncluded).length,
+      },
       crossFile: {
         ran: runCross,
         findings: cross.located.length,

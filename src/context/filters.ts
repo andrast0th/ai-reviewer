@@ -47,3 +47,11 @@ export class PathFilter {
     return this.#res.some((re) => re.test(path));
   }
 }
+
+const TEST_PATH_RE =
+  /(^|\/)(test|tests|__tests__|spec|specs|testFixtures)\/|\.(test|spec)\.[cm]?[jt]sx?$|(Test|Tests|IT|Spec)\.(java|kt|kts)$/;
+
+/** Test sources by common Java/Kotlin/TS/JS conventions. */
+export function isTestPath(p: string): boolean {
+  return TEST_PATH_RE.test(p);
+}

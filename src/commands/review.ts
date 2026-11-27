@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import type { Config, GitlabConfig } from "../config.ts";
+import type { RelatedContext } from "../context/related.ts";
 import { charsPerToken } from "../context/tokens.ts";
 import { ConfigError } from "../errors.ts";
 import type { GitRunner } from "../git.ts";
@@ -22,7 +23,7 @@ import {
   ticketIntent,
 } from "../ticket.ts";
 import { syncMrRepo } from "../workspace.ts";
-import { createLlm, detectContext } from "./common.ts";
+import { createLlm, detectContext, relatedFor } from "./common.ts";
 
 export interface MrDeps {
   cfg: Config;
@@ -44,6 +45,7 @@ export interface LoadedMr extends CollectedFiles {
   mr: MergeRequest;
   intent: Intent;
   ticket: TicketResult;
+  related: RelatedContext;
 }
 
 function requireGitlab(deps: MrDeps): { gitlab: GitlabConfig; token: string } {
@@ -105,7 +107,8 @@ export async function loadMr(refArgs: readonly string[], deps: MrDeps): Promise<
     description: mr.description,
     ticket: ticket.ticket ? ticketIntent(ticket.ticket) : undefined,
   };
-  return { ref, project, mr, intent, ticket, ...collected };
+  const related = await relatedFor(repo, mr.diffRefs.headSha, collected.files, deps.cfg, deps.log);
+  return { ref, project, mr, intent, ticket, related, ...collected };
 }
 
 export interface ReviewArgs {
@@ -143,11 +146,13 @@ export async function reviewMr(args: ReviewArgs, deps: MrDeps): Promise<ReviewOu
     intent: loaded.intent,
     verify: args.verify,
     skipped: loaded.skipped,
+    related: loaded.related,
   });
 
   const warnings: string[] = [];
   if (mr.state && mr.state !== "opened") warnings.push(`the merge request is ${mr.state}.`);
   if (loaded.ticket.warning) warnings.push(loaded.ticket.warning);
+  warnings.push(...loaded.related.notes);
   if (loaded.files.length === 0) warnings.push("no reviewable changes in this merge request.");
   const refs = mr.diffRefs;
   const report = renderReport({
@@ -210,6 +215,7 @@ export async function dumpContext(
       maxOutputTokens: cfg.llm.maxOutputTokens,
       estimator: charsPerToken(),
       intent: loaded.intent,
+      related: loaded.related,
     });
     plan.requests.forEach((messages, i) => {
       requests++;

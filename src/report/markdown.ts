@@ -106,6 +106,7 @@ export function renderReport(r: ReportInput): string {
     `- findings returned by the model: ${s.raw}; dropped as malformed or low-confidence: ${s.invalid}; dropped because the quoted code is not in the file: ${s.unmatchedQuote}; merged as near-duplicates: ${s.merged}`,
     `- cross-file pass: ${crossFileLine(s)}`,
     `- verification: ${verifyLine(s)}`,
+    `- related code: ${contextLine(s)}`,
     "",
   );
   return out.join("\n");
@@ -125,6 +126,22 @@ function crossFileLine(s: ReviewStats): string {
     ? `; changed lines of ${c.truncatedFiles} file(s) shortened to fit`
     : "";
   return `${c.findings} finding(s), ${c.general} about the change as a whole${cut}`;
+}
+
+function contextLine(s: ReviewStats): string {
+  const c = s.context;
+  if (c.packer === "none" && c.filesWithConventions === 0) return "none";
+  const parts: string[] = [];
+  if (c.packer !== "none") {
+    parts.push(
+      `signatures of ${c.neighboursIncluded} neighbour file(s) across ${c.filesWithNeighbours} reviewed file(s) (${c.packer} packer)`,
+    );
+    if (c.neighboursDropped > 0)
+      parts.push(`${c.neighboursDropped} left out to fit the context window`);
+  }
+  if (c.filesWithConventions > 0)
+    parts.push(`conventions file included for ${c.filesWithConventions} file(s)`);
+  return parts.join("; ");
 }
 
 function verifyLine(s: ReviewStats): string {

@@ -1,8 +1,11 @@
 import type { Config } from "../config.ts";
+import { buildRelatedContext, type RelatedContext } from "../context/related.ts";
 import { HttpError } from "../errors.ts";
+import type { GitRepo } from "../git.ts";
 import type { FetchFn } from "../http.ts";
 import { contextLimitFor, LlmClient } from "../llm.ts";
 import type { Logger } from "../log.ts";
+import type { ReviewFile } from "../review/engine.ts";
 
 export interface ContextSize {
   tokens: number;
@@ -31,4 +34,23 @@ export async function detectContext(
     log.warn("LLM server has no /models endpoint; using llm.max_context_tokens");
   }
   return { tokens: cfg.llm.maxContextTokens, source: "config" };
+}
+
+/** Neighbour signatures + conventions for the files under review, per the [review] config. */
+export function relatedFor(
+  repo: GitRepo,
+  head: string,
+  files: readonly ReviewFile[],
+  cfg: Config,
+  log: Logger,
+): Promise<RelatedContext> {
+  return buildRelatedContext(repo, head, files, {
+    neighbours: cfg.review.neighbours && cfg.review.maxNeighbours > 0,
+    maxNeighbours: cfg.review.maxNeighbours,
+    exclude: cfg.review.exclude,
+    conventionsFile: cfg.review.conventionsFile,
+    repomix: cfg.review.repomix,
+    repomixPath: cfg.review.repomixPath,
+    log,
+  });
 }

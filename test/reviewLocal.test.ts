@@ -87,6 +87,19 @@ async function makeRepo(dir: string): Promise<void> {
   await put("logo.png", Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3, 0, 0]));
   await put("old/Names.kt", 'val names = listOf("a", "b", "c", "d", "e", "f")\n');
   await put("gone.js", "module.exports = 1;\n");
+  // Same-package classes TransferService uses without importing: neighbour context.
+  await put(
+    "src/main/java/com/acme/bank/AccountRepository.java",
+    "package com.acme.bank;\n\npublic interface AccountRepository {\n  Account find(String id);\n  void save(Account a);\n}\n",
+  );
+  await put(
+    "src/main/java/com/acme/bank/Account.java",
+    "package com.acme.bank;\n\nimport java.math.BigDecimal;\n\npublic class Account {\n  private BigDecimal balance = BigDecimal.ZERO;\n\n  public void withdraw(BigDecimal amount) {\n    balance = balance.subtract(amount);\n  }\n\n  public void deposit(BigDecimal amount) {\n    balance = balance.add(amount);\n  }\n}\n",
+  );
+  await put(
+    "CONVENTIONS.md",
+    "# Conventions\n\n- Money is always BigDecimal.\n- Repositories are transactional per call.\n",
+  );
   await g("add", "-A");
   await g("commit", "-q", "-m", "base");
   await g("checkout", "-q", "-b", "feature/BANK-1-save");
@@ -387,6 +400,85 @@ describe("mr-reviewer review-local", () => {
       const md = await readFile(r.out.trim(), "utf8");
       assert.match(md, /- cross-file pass: failed \(LLM did not return valid JSON/);
       assert.match(md, /## Findings \(2\)/);
+    });
+  });
+
+  describe("related code and conventions", () => {
+    const javaPrompt = (f: { calls: RecordedCall[] }) =>
+      f.calls
+        .map(userMessage)
+        .find((u) => promptKind(u) === "per-file" && u.includes("TransferService.java")) ?? "";
+
+    it("shows signatures of same-package classes the file uses", async () => {
+      const r = await run([]);
+      assert.equal(r.code, 0, r.err);
+      const p = javaPrompt(r.f);
+      assert.match(
+        p,
+        /## Related code \(signatures only, bodies omitted\)[\s\S]*`src\/main\/java\/com\/acme\/bank\/Account\.java` \(same package\):\n```java\npublic class Account \{/,
+      );
+      assert.match(p, /public void withdraw\(BigDecimal amount\) \{ … \}/);
+      assert.ok(!p.includes("balance.subtract"), "bodies are not sent");
+      assert.match(
+        p,
+        /`src\/main\/java\/com\/acme\/bank\/AccountRepository\.java` \(same package\):\n```java\npublic interface AccountRepository \{\n {2}Account find\(String id\);/,
+      );
+      assert.ok(!p.includes("## Project conventions"), "no conventions unless configured");
+      const md = await readFile(r.out.trim(), "utf8");
+      assert.match(
+        md,
+        /- related code: signatures of 2 neighbour file\(s\) across 1 reviewed file\(s\) \(built-in packer\)/,
+      );
+    });
+
+    it("adds the conventions file when configured, and notes a missing one", async () => {
+      const cfgConv = path.join(root, "config-conv.toml");
+      await writeFile(
+        cfgConv,
+        `${await readFile(cfgPath, "utf8")}\n[review]\nconventions_file = "CONVENTIONS.md"\n`,
+      );
+      const r = await run(["--config", cfgConv]);
+      assert.equal(r.code, 0, r.err);
+      assert.match(
+        javaPrompt(r.f),
+        /## Project conventions\n[^\n]*\n\n```text\n# Conventions\n\n- Money is always BigDecimal\./,
+      );
+      const md = await readFile(r.out.trim(), "utf8");
+      assert.match(md, /conventions file included for 2 file\(s\)/);
+
+      const cfgMissing = path.join(root, "config-missing.toml");
+      await writeFile(
+        cfgMissing,
+        `${await readFile(cfgPath, "utf8")}\n[review]\nconventions_file = "docs/NOPE.md"\n`,
+      );
+      const r2 = await run(["--config", cfgMissing]);
+      assert.equal(r2.code, 0, r2.err);
+      assert.match(
+        await readFile(r2.out.trim(), "utf8"),
+        /> \*\*Note:\*\* conventions file `docs\/NOPE\.md` was not found/,
+      );
+    });
+
+    it("can be turned off", async () => {
+      const cfgOff = path.join(root, "config-off.toml");
+      await writeFile(cfgOff, `${await readFile(cfgPath, "utf8")}\n[review]\nneighbours = false\n`);
+      const r = await run(["--config", cfgOff]);
+      assert.equal(r.code, 0, r.err);
+      assert.ok(!javaPrompt(r.f).includes("## Related code"));
+      assert.match(await readFile(r.out.trim(), "utf8"), /- related code: none/);
+    });
+
+    it("falls back to the built-in packer when repomix is on but not installed", async () => {
+      const cfgRx = path.join(root, "config-rx.toml");
+      await writeFile(
+        cfgRx,
+        `${await readFile(cfgPath, "utf8")}\n[review]\nrepomix = true\nrepomix_path = "${path.join(root, "no-such-repomix")}"\n`,
+      );
+      const r = await run(["--config", cfgRx]);
+      assert.equal(r.code, 0, r.err);
+      assert.match(javaPrompt(r.f), /public class Account \{/);
+      const md = await readFile(r.out.trim(), "utf8");
+      assert.match(md, /no local repomix was found; used the built-in packer/);
     });
   });
 

@@ -41,6 +41,13 @@ export interface ReviewConfig {
   verify: boolean;
   conventionsFile: string;
   exclude: string[];
+  /** Show signatures of imported / same-package files next to each reviewed file. */
+  neighbours: boolean;
+  maxNeighbours: number;
+  /** Use a locally installed repomix --compress instead of the built-in packer. */
+  repomix: boolean;
+  /** Explicit path to the repomix binary; default: this tool's node_modules/.bin/repomix. */
+  repomixPath: string;
 }
 
 export interface NetworkConfig {
@@ -143,7 +150,16 @@ export function parseConfig(text: string, file: string, env: Env): Config {
   const sonarT = optionalTable(root, "sonar");
   if (sonarT) checkKeys(sonarT, "sonar", ["url", "enabled"]);
   const reviewT = optionalTable(root, "review") ?? {};
-  checkKeys(reviewT, "review", ["max_findings", "verify", "conventions_file", "exclude"]);
+  checkKeys(reviewT, "review", [
+    "max_findings",
+    "verify",
+    "conventions_file",
+    "exclude",
+    "neighbours",
+    "max_neighbours",
+    "repomix",
+    "repomix_path",
+  ]);
   const netT = optionalTable(root, "network") ?? {};
   checkKeys(netT, "network", ["ca_bundle", "use_system_ca", "proxy", "no_proxy"]);
 
@@ -198,6 +214,10 @@ export function parseConfig(text: string, file: string, env: Env): Config {
     verify: bool(reviewT, "review", "verify", true),
     conventionsFile: optStr(reviewT, "review", "conventions_file", ""),
     exclude: strList(reviewT, "review", "exclude", DEFAULT_EXCLUDE),
+    neighbours: bool(reviewT, "review", "neighbours", true),
+    maxNeighbours: int(reviewT, "review", "max_neighbours", 8, 0, 30),
+    repomix: bool(reviewT, "review", "repomix", false),
+    repomixPath: expandHome(optStr(reviewT, "review", "repomix_path", "")),
   };
 
   const proxy = optStr(netT, "network", "proxy", "");

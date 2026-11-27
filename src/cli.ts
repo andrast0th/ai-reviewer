@@ -26,7 +26,7 @@ import {
 import type { SshRunner } from "./ssh.ts";
 import { TICKET_KEY_RE } from "./ticket.ts";
 
-export const VERSION = "0.5.0";
+export const VERSION = "0.6.0";
 
 const USAGE = `Usage: mr-reviewer <command> [options]
 

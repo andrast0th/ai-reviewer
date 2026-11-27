@@ -16,7 +16,7 @@ import {
   ticketCell,
   ticketIntent,
 } from "../ticket.ts";
-import { createLlm, detectContext } from "./common.ts";
+import { createLlm, detectContext, relatedFor } from "./common.ts";
 
 export interface ReviewLocalArgs {
   repoDir: string;
@@ -70,6 +70,8 @@ export async function reviewLocal(
     ticket: ticket.ticket ? ticketIntent(ticket.ticket) : undefined,
   };
 
+  const related = await relatedFor(repo, change.headSha, change.files, cfg, log);
+
   const llm = createLlm(cfg, deps.apiKey, log, deps.fetch);
   const ctx =
     change.files.length > 0
@@ -87,6 +89,7 @@ export async function reviewLocal(
     intent,
     verify: args.verify,
     skipped: change.skipped,
+    related,
   });
 
   const warnings: string[] = [];
@@ -94,6 +97,7 @@ export async function reviewLocal(
     warnings.push("the work tree has uncommitted changes; only committed changes were reviewed.");
   if (change.files.length === 0) warnings.push("no reviewable changes between the base and HEAD.");
   if (ticket.warning) warnings.push(ticket.warning);
+  warnings.push(...related.notes);
   const report = renderReport({
     meta: {
       title: `Review of ${change.branch ?? "HEAD"} (local)`,

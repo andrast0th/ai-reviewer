@@ -172,6 +172,12 @@ export class GitRepo {
       .filter(Boolean);
   }
 
+  /** Every file path in the tree at `rev`. */
+  async listFiles(rev: string): Promise<string[]> {
+    const out = await this.git(["ls-tree", "-r", "--name-only", "-z", rev]);
+    return out.split("\0").filter(Boolean);
+  }
+
   /** File content at a commit (not the working tree). */
   async showFile(rev: string, path: string): Promise<string> {
     return this.git(["show", `${rev}:${path}`]);

@@ -4,7 +4,7 @@ A local CLI that reviews GitLab merge requests with the company's internal, self
 Code goes only to the internal LLM; nothing is sent to third parties. See `CLAUDE.md` for the
 full design.
 
-Status: **milestone 5**: `check`, `review <mr_url>`, `review-local` and `context`, with Jira ticket intent, a cross-file pass and a verification pass. Nothing is written to GitLab yet (draft reviews come in milestone 8).
+Status: **milestone 6**: `check`, `review <mr_url>`, `review-local` and `context`, with Jira ticket intent, related-code signatures, a cross-file pass and a verification pass. Nothing is written to GitLab yet (draft reviews come in milestone 8).
 
 ## Requirements
 
@@ -114,6 +114,30 @@ This writes `./reviews/<group-repo>-<iid>-<sha>.prompts.md`. It contains code, s
 5. **Cap** at `--max-findings` (default `review.max_findings`, 10).
 
 The report's Stats section shows what each step did. `context --dump` includes the cross-file prompt too.
+
+## Related code and conventions
+
+Each file is reviewed with the **signatures** of the files it depends on, so the model can check calls and types
+it can't otherwise see:
+
+- **Which files:** directly imported files (Java/Kotlin imports resolved by package path; relative TS/JS imports,
+  including `index` files and `.js` → `.ts`), then same-package Java/Kotlin classes the file mentions by name. Test
+  files and `review.exclude` paths are skipped. There are at most `review.max_neighbours` (8) per file.
+- **What's sent:** an outline only. Classes, interfaces, enums, records and types are kept; method and function
+  bodies become `{ … }`; imports and comments are dropped. Bodies of other files never go to the model.
+- **Budget:** the layers go in priority order: intent → diff → full file → related signatures → conventions. Related
+  code and conventions are added only when the diff and the full file fit in one request, and only as much as still
+  fits. Each related file goes in whole or not at all. The report's Stats line shows how many were included or
+  left out.
+- **Conventions:** set `review.conventions_file = "CONVENTIONS.md"` (a path inside the reviewed repo) to give the
+  model the team's rules. It's read from the reviewed commit, and a missing file is noted in the report.
+- **Turning it off:** `review.neighbours = false`.
+
+**repomix (optional).** The built-in outliner is the default. To use repomix's tree-sitter compression instead, install
+it into this tool (`npm i -D repomix`) or set `review.repomix_path`, then set `review.repomix = true`. Only that binary
+is used: never `npx` or PATH. It runs on temporary copies of just the related files, with no secrets in its
+environment and its HTTP(S) proxy pointed at a dead local port so it can't reach the network. If anything goes wrong,
+the built-in outliner is used and the report says so. This has not yet been tried with a real repomix install.
 
 ## Jira ticket
 

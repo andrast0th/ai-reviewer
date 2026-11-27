@@ -1,3 +1,4 @@
+import { isTestPath } from "../context/filters.ts";
 import { SAFETY_MARGIN, type TokenEstimator } from "../context/tokens.ts";
 import type { Hunk } from "../diff.ts";
 import type { ChatMessage } from "../llm.ts";
@@ -5,12 +6,7 @@ import type { ReviewFile, SkippedFile } from "./engine.ts";
 import type { LocatedFinding } from "./findings.ts";
 import { crossFilePrompt, type Intent } from "./prompts.ts";
 
-const TEST_PATH_RE =
-  /(^|\/)(test|tests|__tests__|spec|specs|testFixtures)\/|\.(test|spec)\.[cm]?[jt]sx?$|(Test|Tests|IT|Spec)\.(java|kt|kts)$/;
-
-export function isTestPath(p: string): boolean {
-  return TEST_PATH_RE.test(p);
-}
+export { isTestPath };
 
 /** Hunk headers and changed lines only (no context): the shape of the change, compactly. */
 export function condensedHunks(hunks: readonly Hunk[]): string[] {

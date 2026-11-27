@@ -31,6 +31,10 @@ enabled = false
 max_findings = 10
 verify = true
 conventions_file = ""   # path inside the reviewed repo, e.g. "CONVENTIONS.md"
+neighbours = true       # show signatures of imported / same-package files to the model
+max_neighbours = 8
+repomix = false         # use a locally installed repomix --compress (npm i -D repomix in this tool)
+# repomix_path = ""     # explicit path to the repomix binary
 # exclude = ["**/package-lock.json", "**/generated/**"]   # defaults cover lockfiles and build output
 
 [network]

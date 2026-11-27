@@ -79,6 +79,10 @@ describe("mr-reviewer review <mr_url>", () => {
     await g("init", "-q", "-b", "main");
     await put("src/main/java/com/acme/bank/Ledger.java", LEDGER_BASE);
     await put("web/gen/client.ts", "export const v = 1;\n");
+    await put(
+      "src/main/java/com/acme/bank/Entry.java",
+      "package com.acme.bank;\n\npublic record Entry(String id, long amountCents) {\n  public boolean isCredit() {\n    return amountCents > 0;\n  }\n}\n",
+    );
     await g("add", "-A");
     await g("commit", "-q", "-m", "base");
     shas.base = (await g("rev-parse", "HEAD")).trim();
@@ -209,6 +213,11 @@ describe("mr-reviewer review <mr_url>", () => {
     assert.match(prompts[0] ?? "", /Persist both accounts after a transfer\./);
     // 15 lines of context: the unchanged total() loop is in the diff.
     assert.match(prompts[0] ?? "", /```diff\n[\s\S]*sum \+= e\.amountCents\(\);/);
+    // Neighbour signatures come from the bare clone too.
+    assert.match(
+      prompts[0] ?? "",
+      /`src\/main\/java\/com\/acme\/bank\/Entry\.java` \(same package\):\n```java\npublic record Entry\(String id, long amountCents\) \{\n {2}public boolean isCredit\(\) \{ … \}/,
+    );
   });
 
   describe("with Jira", () => {

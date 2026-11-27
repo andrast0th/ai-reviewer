@@ -1,6 +1,6 @@
 {
   "name": "mr-reviewer",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Local CLI that reviews GitLab merge requests with the internal LLM",
   "private": true,
   "type": "module",
