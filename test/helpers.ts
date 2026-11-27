@@ -68,3 +68,62 @@ export function captureLog(): { lines: string[]; write: (l: string) => void } {
 }
 
 export const noSleep = async (): Promise<void> => {};
+
+// ------------------------------------------------------------ fake LLM by pass
+
+export type PromptKind = "per-file" | "cross-file" | "verify" | "other";
+
+export function promptKind(user: string): PromptKind {
+  if (user.startsWith("Review the change to")) return "per-file";
+  if (user.startsWith("Review how the files in this change fit together")) return "cross-file";
+  if (user.startsWith("A reviewer reported this problem")) return "verify";
+  return "other";
+}
+
+export function userMessage(call: RecordedCall): string {
+  return (
+    (call.body as { messages?: Array<{ content: string }> } | undefined)?.messages?.[1]?.content ??
+    ""
+  );
+}
+
+/** A chat-completions response whose content is `content` (JSON-encoded if not a string). */
+export function chatReply(content: unknown, finish = "stop"): FakeResponse {
+  return {
+    json: {
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: typeof content === "string" ? content : JSON.stringify(content),
+          },
+          finish_reason: finish,
+        },
+      ],
+    },
+  };
+}
+
+export interface LlmScript {
+  perFile?: (user: string) => unknown;
+  crossFile?: (user: string) => unknown;
+  /** Default: every finding is confirmed as real. */
+  verify?: (user: string) => unknown;
+}
+
+/** A chat handler that answers each pass differently. */
+export function llmByPass(s: LlmScript): (call: RecordedCall) => FakeResponse {
+  return (call) => {
+    const user = userMessage(call);
+    switch (promptKind(user)) {
+      case "per-file":
+        return chatReply(s.perFile?.(user) ?? { findings: [] });
+      case "cross-file":
+        return chatReply(s.crossFile?.(user) ?? { findings: [] });
+      case "verify":
+        return chatReply(s.verify?.(user) ?? { verdict: "real", reason: "test" });
+      default:
+        return chatReply({ ok: true });
+    }
+  };
+}

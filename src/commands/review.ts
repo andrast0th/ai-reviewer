@@ -8,6 +8,7 @@ import type { FetchFn } from "../http.ts";
 import type { Logger } from "../log.ts";
 import { type MrRef, parseMrRef } from "../mrUrl.ts";
 import { mrReportPath, renderReport } from "../report/markdown.ts";
+import { planCrossFile } from "../review/crossFile.ts";
 import { planFile, reviewFiles } from "../review/engine.ts";
 import { type Intent, PROMPT_VERSION } from "../review/prompts.ts";
 import { type CollectedFiles, changedFromMrDiffs, collectFiles } from "../review/sources.ts";
@@ -110,6 +111,7 @@ export async function loadMr(refArgs: readonly string[], deps: MrDeps): Promise<
 export interface ReviewArgs {
   refArgs: readonly string[];
   maxFindings: number;
+  verify: boolean;
   outDir: string;
 }
 
@@ -139,6 +141,8 @@ export async function reviewMr(args: ReviewArgs, deps: MrDeps): Promise<ReviewOu
     estimator: charsPerToken(),
     log,
     intent: loaded.intent,
+    verify: args.verify,
+    skipped: loaded.skipped,
   });
 
   const warnings: string[] = [];
@@ -169,6 +173,7 @@ export async function reviewMr(args: ReviewArgs, deps: MrDeps): Promise<ReviewOu
       generatedAt: (deps.now ?? (() => new Date()))(),
     },
     findings: result.findings,
+    general: result.general,
     skipped: loaded.skipped,
     failed: result.failed,
     stats: result.stats,
@@ -185,7 +190,7 @@ export async function reviewMr(args: ReviewArgs, deps: MrDeps): Promise<ReviewOu
  * inspecting what the model sees. Uses llm.max_context_tokens for the budget.
  */
 export async function dumpContext(
-  args: Omit<ReviewArgs, "maxFindings">,
+  args: Omit<ReviewArgs, "maxFindings" | "verify">,
   deps: MrDeps,
 ): Promise<{ path: string; requests: number }> {
   const loaded = await loadMr(args.refArgs, deps);
@@ -214,6 +219,22 @@ export async function dumpContext(
       );
       for (const m of messages) out.push(`### ${m.role}`, "", fence(m.content, "text"), "");
     });
+  }
+  if (loaded.files.length > 0) {
+    // Shown with no per-file findings; in a real run they are listed under "Already reported".
+    const cross = planCrossFile(loaded.files, loaded.skipped, [], {
+      contextTokens: cfg.llm.maxContextTokens,
+      maxOutputTokens: cfg.llm.maxOutputTokens,
+      estimator: charsPerToken(),
+      intent: loaded.intent,
+    });
+    requests++;
+    out.push("## Cross-file pass", "");
+    for (const m of cross.messages) out.push(`### ${m.role}`, "", fence(m.content, "text"), "");
+    out.push(
+      "<sub>The verification pass adds one request per finding; those depend on the findings.</sub>",
+      "",
+    );
   }
   if (loaded.skipped.length > 0) {
     out.push(

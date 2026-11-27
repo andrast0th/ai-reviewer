@@ -6,7 +6,7 @@ import type { Language } from "../context/builder.ts";
 import type { ChatMessage } from "../llm.ts";
 import { fence } from "../text.ts";
 
-export const PROMPT_VERSION = "2026-11-27.4";
+export const PROMPT_VERSION = "2026-11-27.5";
 
 /** Sent as a follow-up user message when the model's reply contained no parseable JSON. */
 export const JSON_RETRY_NUDGE =
@@ -165,6 +165,115 @@ ${fileSection}
 `;
   return [
     { role: "system", content: PER_FILE_SYSTEM },
+    { role: "user", content: user },
+  ];
+}
+
+// ------------------------------------------------------------ cross-file pass
+
+const CROSS_FILE_SYSTEM = `You are a senior software engineer reviewing a whole change set that spans several files.
+Other reviewers already looked at each file on its own. Your job is only what they could not see: problems that come from how the files fit together.
+You cannot run code or call tools; everything you know is in the user message. An empty list is a good, valid answer.
+Reply with JSON only.`;
+
+export interface CrossFileInput {
+  /** Condensed diff of the whole change (see crossFile.ts). */
+  summary: string;
+  /** Findings from the per-file pass, one line each, so they are not repeated. */
+  knownFindings: string[];
+  /** Paths of changed test files. */
+  testFiles: string[];
+  intent?: Intent | undefined;
+}
+
+export function crossFilePrompt(input: CrossFileInput): ChatMessage[] {
+  const withIntent = hasIntent(input.intent);
+  const categories = `api-break|bug|error-handling|concurrency|missing-tests${withIntent ? "|intent-mismatch" : ""}`;
+  const known =
+    input.knownFindings.length > 0 ? input.knownFindings.map((k) => `- ${k}`).join("\n") : "(none)";
+  const tests =
+    input.testFiles.length > 0
+      ? `Test files changed: ${input.testFiles.map((t) => `\`${t}\``).join(", ")}`
+      : "No test files were changed.";
+
+  const user = `Review how the files in this change fit together.
+${intentSection(input.intent)}
+## Look for
+- a changed signature, return value, thrown error, config key or data format in one file that another changed file still uses the old way
+- a new or changed call whose callee (in another changed file) does not support it: wrong arguments, missing method, wrong order of steps
+- inconsistent changes: something renamed, added or removed in one place but not in the others that depend on it
+- missing tests: logic that changed in a meaningful way with no corresponding test change (report once for the change, not per file)
+${withIntent ? "- intent mismatch: something the change title, description or ticket clearly requires that no file in the change does, or a change that contradicts it\n" : ""}
+## Ignore
+- problems inside a single file: those are already covered (see the list below)
+- style, naming, formatting, documentation
+- guesses about code you cannot see
+Do not praise and do not summarise.
+
+## Already reported (do not repeat)
+${known}
+
+## Output
+Return only this JSON object, with no other text:
+{"findings": [{"file": "path/of/the/file", "quote": "...", "severity": "high|medium|low", "category": "${categories}", "issue": "...", "suggestion": "...", "confidence": "high|medium"}]}
+
+Rules:
+- "file" and "quote": the file where the problem shows, and 1 to 3 consecutive lines copied exactly from the new version of that file (only "+" or unchanged lines; without the "+" marker).
+- Only for "missing-tests"${withIntent ? ' and "intent-mismatch"' : ""} when no single line shows the problem: set "file" and "quote" to "".
+- "severity": "high" = will break in normal use; "medium" = breaks in some realistic cases; "low" = minor risk.
+- "confidence": "high" or "medium"; if less sure, leave it out.
+If there are no such problems, return {"findings": []}.
+
+## The change
+
+${tests}
+
+${fence(input.summary, "diff")}
+`;
+  return [
+    { role: "system", content: CROSS_FILE_SYSTEM },
+    { role: "user", content: user },
+  ];
+}
+
+// ------------------------------------------------------------ verification pass
+
+const VERIFY_SYSTEM = `You double-check code review findings before they are shown to a developer.
+False alarms waste the developer's time, so be strict: a finding is real only if the code shown actually has the problem in a realistic situation.
+Reply with JSON only.`;
+
+export interface VerifyInput {
+  path: string;
+  language: Language;
+  severity: string;
+  category: string;
+  issue: string;
+  suggestion: string;
+  /** Numbered excerpt of the file after the change (see verify.ts). */
+  excerpt: string;
+  /** Short intent: change title and ticket summary. */
+  intentLine: string;
+}
+
+export function verifyPrompt(input: VerifyInput): ChatMessage[] {
+  const user = `A reviewer reported this problem in \`${input.path}\` (${input.language.name}):
+
+- category: ${input.category}
+- severity: ${input.severity}
+- issue: ${input.issue}
+- suggested fix: ${input.suggestion || "(none)"}
+${input.intentLine ? `\nThe change is meant to: ${input.intentLine}\n` : ""}
+Here is the code around it, after the change. Each line starts with its line number; "+" marks lines the change added or modified and ">" marks the lines the finding points at.
+
+${fence(input.excerpt, input.language.fence)}
+
+Is this a real problem?
+- Answer "real" only if the code shown really behaves as described in a realistic case.
+- Answer "not-real" if the code already handles it, the description is wrong, it depends on assumptions the code does not support, or it is only about style.
+
+Return only this JSON object: {"verdict": "real" or "not-real", "reason": "one sentence"}`;
+  return [
+    { role: "system", content: VERIFY_SYSTEM },
     { role: "user", content: user },
   ];
 }

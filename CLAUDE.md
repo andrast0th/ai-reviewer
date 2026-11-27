@@ -67,7 +67,9 @@ src/
     repomix.ts          # wrapper around the locally installed repomix CLI (--compress)
     tokens.ts           # token estimation (chars/4 default; pluggable)
   review/
-    engine.ts           # orchestration: per-file pass → cross-file pass → verify pass
+    engine.ts           # orchestration: per-file pass → cross-file pass → merge/rank → verify pass → cap
+    crossFile.ts        # condensed whole-change summary + cross-file request
+    verify.ts           # numbered excerpts + per-finding real/not-real check
     prompts.ts          # all prompt templates live here, nowhere else
     findings.ts         # Finding type + guard, quote validation, line mapping, dedupe
     sources.ts          # turn changed-file lists (local git or GitLab diffs API) into review inputs
@@ -96,10 +98,11 @@ Input is a pasted MR URL, e.g. `https://gitlab.example.com/group/sub/repo/-/merg
    Drop layers from the bottom when the budget is exceeded. Skip generated files, lockfiles, binaries and vendored code (`filters.ts`, configurable globs). Typical MRs touch 10 to 40 files, so the per-file pass is the normal path, not the exception.
 5. **Review engine:**
    - **Per-file pass:** diff, full file and neighbours → JSON findings.
-   - **Cross-file pass:** all findings, a summary of the whole diff and the ticket intent → issues that span files (changed signatures, broken callers), mismatches with the ticket, and logic changes with no matching test changes.
-   - **Quote validation (deterministic):** each finding must include `quote`, the exact code. Drop findings whose quote isn't found in the file at `head_sha`. Find the line number from the quote; never trust line numbers the model gives. (Findings with category `intent-mismatch` or `missing-tests` may have no quote; they then go into the summary instead of an inline comment.)
-   - **Verification pass (default on, `--no-verify` to skip):** send each surviving finding back with its code and ask yes/no "is this a real issue?". Keep only the yeses.
-   - **Dedupe and rank:** merge near-duplicates, sort by severity, and cap the total (default 10).
+   - **Cross-file pass (`crossFile.ts`):** one request with a condensed diff of the whole change (hunk headers and changed lines only, every file cut to an equal share if it doesn't fit; names of not-reviewed files, e.g. deleted ones), which test files changed, the intent, and the per-file findings as "already reported" → issues that span files (changed signatures, broken callers, inconsistent renames), mismatches with the ticket, and logic changes with no matching test changes. Each finding names its `file`; quoted ones go through quote validation like any other. Fails soft.
+   - **Quote validation (deterministic):** each finding must include `quote`, the exact code. Drop findings whose quote isn't found in the file at `head_sha`. Find the line number from the quote; never trust line numbers the model gives. (Cross-file findings with category `intent-mismatch` or `missing-tests` may have no quote; they go into the report's **Overall** section, max 3, and later into the summary note instead of an inline comment.)
+   - **Merge and rank:** sort by severity, confidence, on-changed-line; drop a finding that repeats a better-ranked one (same file, within 3 lines, and same category or similar wording by word-overlap).
+   - **Verification pass (`verify.ts`, default on, `--no-verify` / `review.verify` to skip):** the top `min(30, 2 × max_findings)` candidates each go back with a numbered excerpt (±25 lines, `+` marks changed lines, `>` the finding) and the short intent, asking for `{"verdict": "real" | "not-real"}`. Rejected findings are dropped; unclear answers or verifier errors keep the finding marked "not verified" so nothing disappears silently.
+   - **Cap** the total (default 10).
    - LLM calls for independent files may run concurrently, capped by `llm.concurrency` (default 2), since rate limits are unknown.
 6. **Output:** a Markdown report in `./reviews/<project>-<iid>-<short_sha>.md`, always written. With `--draft`: show a preview of every draft note, ask for confirmation, then create:
    - one **inline draft note** per quoted finding (`POST /projects/:id/merge_requests/:iid/draft_notes` with a `position` built from `diff_refs` and the new or old path and line), and
@@ -231,7 +234,7 @@ Without `--draft`, nothing is written to GitLab. Install locally with `npm link`
 2. **`review-local`:** git diff, filters, the built-in packer, per-file pass, quote validation, Markdown report. Usable without any integrations.
 3. **GitLab read:** MR URL parsing, MR fetch, diffs, SSH bare clone + fetch, `review <mr_url>`, `context --dump`, SSH probe in `check`.
 4. **Jira (DC):** key extraction, issue fetch, intent in the prompt, `--ticket`, AC-field check in `check`.
-5. **Verification and cross-file passes** (including intent-mismatch and missing-tests), dedupe, ranking.
+5. **Verification and cross-file passes** (including intent-mismatch and missing-tests), near-duplicate merging, ranking, `--no-verify`.
 6. **Neighbours and repomix `--compress`**, plus a token budget that drops layers.
 7. **Sonar:** fetch, then an optional local scan. Scope depends on the edition, once known.
 8. **`--draft`:** GitLab draft notes (inline + summary), preview and confirm, duplicate markers, never publish.

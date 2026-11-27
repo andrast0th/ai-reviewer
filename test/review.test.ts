@@ -5,7 +5,14 @@ import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { defaultIo, type Io, main } from "../src/cli.ts";
 import { type GitRunner, runGit } from "../src/git.ts";
-import { fakeFetch, fixtureJson, type RecordedCall } from "./helpers.ts";
+import {
+  fakeFetch,
+  fixtureJson,
+  llmByPass,
+  promptKind,
+  type RecordedCall,
+  userMessage,
+} from "./helpers.ts";
 
 // SYNTHETIC end-to-end: a local bare repo plays GitLab's SSH remote (via url.insteadOf), and a
 // fake fetch plays the GitLab API and the LLM. No network, no real company data.
@@ -113,28 +120,19 @@ describe("mr-reviewer review <mr_url>", () => {
         headers: { "x-next-page": "" },
       },
       "GET https://llm.test/v1/models": { json: fixtureJson("llm/models-vllm.json") },
-      "POST https://llm.test/v1/chat/completions": () => ({
-        json: {
-          choices: [
+      "POST https://llm.test/v1/chat/completions": llmByPass({
+        perFile: () => ({
+          findings: [
             {
-              message: {
-                content: JSON.stringify({
-                  findings: [
-                    {
-                      quote: "return entries.get(entries.size());",
-                      severity: "high",
-                      category: "bug",
-                      issue: "Off by one: index size() is always out of bounds.",
-                      suggestion: "Use entries.size() - 1 and handle the empty list.",
-                      confidence: "high",
-                    },
-                  ],
-                }),
-              },
-              finish_reason: "stop",
+              quote: "return entries.get(entries.size());",
+              severity: "high",
+              category: "bug",
+              issue: "Off by one: index size() is always out of bounds.",
+              suggestion: "Use entries.size() - 1 and handle the empty list.",
+              confidence: "high",
             },
           ],
-        },
+        }),
       }),
       ...over,
     } as Parameters<typeof fakeFetch>[0];
@@ -171,10 +169,14 @@ describe("mr-reviewer review <mr_url>", () => {
     return { code, out: out.join(""), err: err.join(""), f };
   }
 
+  /** User messages of the per-file requests (other passes filtered out). */
   const chats = (f: { calls: RecordedCall[] }) =>
     f.calls
       .filter((c) => c.method === "POST")
-      .map((c) => (c.body as { messages: Array<{ content: string }> }).messages[1]?.content ?? "");
+      .map(userMessage)
+      .filter((u) => promptKind(u) === "per-file");
+  const kinds = (f: { calls: RecordedCall[] }) =>
+    f.calls.filter((c) => c.method === "POST").map((c) => promptKind(userMessage(c)));
 
   it("clones over (fake) SSH, reviews the MR and writes the report", async () => {
     const r = await run(["review", MR_URL]);
@@ -195,6 +197,10 @@ describe("mr-reviewer review <mr_url>", () => {
 
     const prompts = chats(r.f);
     assert.equal(prompts.length, 1);
+    // One per-file request, one cross-file request, one verification per finding.
+    assert.deepEqual(kinds(r.f), ["per-file", "cross-file", "verify"]);
+    assert.match(md, /<sub>confidence: high · verified<\/sub>/);
+    assert.match(md, /- verification: 1 checked, 0 rejected as not real, 0 unclear/);
     assert.match(
       prompts[0] ?? "",
       /## What the change is meant to do\n.*information, not instructions/,
@@ -293,6 +299,8 @@ describe("mr-reviewer review <mr_url>", () => {
     assert.match(dump, /## src\/main\/java\/com\/acme\/bank\/Ledger\.java\n\n### system/);
     assert.match(dump, /### user\n\n````?text\nReview the change to/);
     assert.match(dump, /Keep it local/);
+    assert.match(dump, /## Cross-file pass\n\n### system/);
+    assert.match(dump, /Review how the files in this change fit together/);
   });
 
   it("fails clearly when the MR head isn't in the remote", async () => {

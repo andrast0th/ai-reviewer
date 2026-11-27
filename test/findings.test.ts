@@ -6,8 +6,11 @@ import {
   type LocatedFinding,
   locate,
   locateQuote,
+  normalizeCrossFindings,
   normalizeFindings,
   rankAndCap,
+  rankAndMerge,
+  similarity,
 } from "../src/review/findings.ts";
 
 const FILE = [
@@ -152,34 +155,169 @@ describe("locate + rankAndCap", () => {
     assert.equal(lf?.snippet, "    repo.delete(a.getId());");
   });
 
-  it("sorts by severity, confidence, changed lines; removes exact duplicates; caps", () => {
-    const mk = (o: Partial<LocatedFinding>): LocatedFinding => ({
+  const mk = (o: Partial<LocatedFinding>): LocatedFinding => {
+    const line = o.line ?? 1;
+    return {
       ...base,
-      line: 1,
-      endLine: 1,
+      line,
+      endLine: line,
       onChangedLine: true,
       snippet: "",
+      verification: "skipped",
+      pass: "file",
       ...o,
-    });
+    };
+  };
+
+  it("sorts by severity, confidence, changed lines; removes duplicates; caps", () => {
     const out = rankAndCap(
       [
-        mk({ severity: "low", line: 1 }),
-        mk({ severity: "high", line: 2, onChangedLine: false }),
-        mk({ severity: "high", line: 3 }),
-        mk({ severity: "high", line: 3 }), // duplicate
-        mk({ severity: "medium", line: 4, confidence: "medium" }),
-        mk({ severity: "medium", line: 5 }),
+        mk({ severity: "low", line: 10 }),
+        mk({ severity: "high", line: 20, onChangedLine: false }),
+        mk({ severity: "high", line: 30 }),
+        mk({ severity: "high", line: 30 }), // duplicate
+        mk({ severity: "medium", line: 40, confidence: "medium" }),
+        mk({ severity: "medium", line: 50 }),
       ],
       4,
     );
     assert.deepEqual(
       out.map((f) => [f.severity, f.line]),
       [
-        ["high", 3],
-        ["high", 2],
-        ["medium", 5],
-        ["medium", 4],
+        ["high", 30],
+        ["high", 20],
+        ["medium", 50],
+        ["medium", 40],
       ],
     );
+  });
+
+  it("merges near-duplicates but keeps different problems on the same line", () => {
+    const r = rankAndMerge([
+      mk({
+        line: 10,
+        severity: "medium",
+        category: "bug",
+        issue: "Index size() is out of bounds for the list",
+      }),
+      // same place, same category -> merged into the higher-ranked one
+      mk({
+        line: 12,
+        severity: "high",
+        category: "bug",
+        issue: "Off by one when reading the last element",
+      }),
+      // same place, other category, similar text -> merged
+      mk({
+        line: 11,
+        severity: "low",
+        category: "error-handling",
+        issue: "Off by one: reading the last element fails",
+      }),
+      // same place, other category, different text -> kept
+      mk({
+        line: 10,
+        severity: "medium",
+        category: "security",
+        issue: "User id is logged in plain text",
+      }),
+      // far away, same category -> kept
+      mk({
+        line: 40,
+        severity: "medium",
+        category: "bug",
+        issue: "Index size() is out of bounds for the list",
+      }),
+      // other file -> kept
+      mk({ file: "B.java", line: 10, category: "bug", issue: "Index size() is out of bounds" }),
+    ]);
+    assert.equal(r.merged, 2);
+    assert.deepEqual(
+      r.findings.map((f) => [f.file, f.line, f.category]),
+      [
+        ["A.java", 12, "bug"],
+        ["A.java", 10, "security"],
+        ["A.java", 40, "bug"],
+        ["B.java", 10, "bug"],
+      ],
+    );
+  });
+
+  it("scores text similarity on content words", () => {
+    assert.ok(
+      similarity("The list index is out of bounds", "index out of bounds in the list") > 0.6,
+    );
+    assert.ok(similarity("SQL injection in query", "missing null check") === 0);
+  });
+});
+
+describe("normalizeCrossFindings", () => {
+  const known = new Set(["src/A.java", "src/B.java"]);
+  it("routes located vs whole-change findings and drops the rest", () => {
+    const r = normalizeCrossFindings(
+      {
+        findings: [
+          {
+            file: "src/B.java",
+            quote: "b();",
+            severity: "high",
+            category: "api-break",
+            issue: "caller uses old signature",
+          },
+          {
+            file: "./src/A.java",
+            quote: "a();",
+            severity: "medium",
+            category: "bug",
+            issue: "leading ./ is fine",
+          },
+          {
+            file: "",
+            quote: "",
+            severity: "medium",
+            category: "missing-tests",
+            issue: "no tests for the new rule",
+            suggestion: "add one",
+          },
+          {
+            file: "",
+            quote: "",
+            severity: "high",
+            category: "intent-mismatch",
+            issue: "ticket asks for an audit log",
+          },
+          {
+            file: "",
+            quote: "",
+            severity: "high",
+            category: "bug",
+            issue: "a bug without a place",
+          },
+          {
+            file: "src/Unknown.java",
+            quote: "x();",
+            severity: "high",
+            category: "bug",
+            issue: "file not in change",
+          },
+        ],
+      },
+      known,
+    );
+    assert.deepEqual(
+      r.located.map((f) => [f.file, f.category]),
+      [
+        ["src/B.java", "api-break"],
+        ["src/A.java", "bug"],
+      ],
+    );
+    assert.deepEqual(
+      r.general.map((g) => [g.category, g.issue]),
+      [
+        ["missing-tests", "no tests for the new rule"],
+        ["intent-mismatch", "ticket asks for an audit log"],
+      ],
+    );
+    assert.equal(r.invalid, 2);
   });
 });

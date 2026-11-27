@@ -4,7 +4,7 @@ A local CLI that reviews GitLab merge requests with the company's internal, self
 Code goes only to the internal LLM; nothing is sent to third parties. See `CLAUDE.md` for the
 full design.
 
-Status: **milestone 4**: `check`, `review <mr_url>`, `review-local` and `context`, with Jira ticket intent. Nothing is written to GitLab yet (draft reviews come in milestone 8).
+Status: **milestone 5**: `check`, `review <mr_url>`, `review-local` and `context`, with Jira ticket intent, a cross-file pass and a verification pass. Nothing is written to GitLab yet (draft reviews come in milestone 8).
 
 ## Requirements
 
@@ -96,6 +96,24 @@ mr-reviewer context https://gitlab.example.com/group/repo/-/merge_requests/123 -
 ```
 
 This writes `./reviews/<group-repo>-<iid>-<sha>.prompts.md`. It contains code, so keep it local.
+
+## How a review works
+
+1. **Per file:** each changed file's diff and full content are reviewed on their own (one request per file, or
+   more if it's large).
+2. **Across files:** one request sees a condensed diff of the whole change, which test files changed, the intent,
+   and what step 1 found. It looks for what single-file reviews miss: callers still using an old signature,
+   renames done in one place but not another, changed logic without tests, and things the ticket asks for that
+   nothing implements. Findings about the change as a whole go into the report's **Overall** section.
+3. **Merge and rank:** findings whose quote isn't in the file are dropped. A finding that repeats a better-ranked one
+   (same spot, same category or similar wording) is merged away.
+4. **Verify:** the top candidates (up to twice `--max-findings`, at most 30) each go back to the model with the
+   code around them and a strict "is this real?" question. Findings it rejects are dropped. If the answer is unclear,
+   the finding is kept and marked "not verified". This costs one request per candidate; `--no-verify` (or
+   `review.verify = false`) skips it.
+5. **Cap** at `--max-findings` (default `review.max_findings`, 10).
+
+The report's Stats section shows what each step did. `context --dump` includes the cross-file prompt too.
 
 ## Jira ticket
 

@@ -26,7 +26,7 @@ import {
 import type { SshRunner } from "./ssh.ts";
 import { TICKET_KEY_RE } from "./ticket.ts";
 
-export const VERSION = "0.4.0";
+export const VERSION = "0.5.0";
 
 const USAGE = `Usage: mr-reviewer <command> [options]
 
@@ -43,6 +43,7 @@ Review options:
   --max-findings <n>    Cap on reported findings (default: review.max_findings)
   --out <dir>           Where to write the report (default: ./reviews)
   --ticket <KEY>        Use this Jira issue instead of searching titles, branches and commits
+  --no-verify           Skip the verification pass (one extra LLM call per finding)
 
 Global options:
   --config <path>   Config file (default: $MR_REVIEWER_CONFIG or ~/.config/mr-reviewer/config.toml)
@@ -137,6 +138,7 @@ export async function main(io: Io): Promise<number> {
     }
 
     const cfg = await loadConfig(resolveConfigPath(values.config, io.env), io.env);
+    const verify = cfg.review.verify && !values["no-verify"];
     const net = await setupNetwork(cfg.network, io.network);
     if (net.kind === "reexec") {
       log.debug("this Node version lacks runtime proxy/CA APIs; re-executing with start-up flags");
@@ -177,7 +179,7 @@ export async function main(io: Io): Promise<number> {
         return ExitCode.Ok;
       }
       const res = await reviewMr(
-        { refArgs, outDir, maxFindings: maxFindings ?? cfg.review.maxFindings },
+        { refArgs, outDir, maxFindings: maxFindings ?? cfg.review.maxFindings, verify },
         deps,
       );
       log.info(
@@ -203,6 +205,7 @@ export async function main(io: Io): Promise<number> {
           repoDir: path.resolve(io.cwd, positionals[1] ?? "."),
           baseRef: values.base ?? "origin/main",
           maxFindings: maxFindings ?? cfg.review.maxFindings,
+          verify,
           outDir: path.resolve(io.cwd, values.out ?? "reviews"),
         },
         deps,
@@ -247,6 +250,7 @@ function parse(argv: readonly string[]) {
       out: { type: "string" },
       dump: { type: "boolean" },
       ticket: { type: "string" },
+      "no-verify": { type: "boolean" },
     },
   });
 }

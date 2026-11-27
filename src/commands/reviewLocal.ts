@@ -22,6 +22,7 @@ export interface ReviewLocalArgs {
   repoDir: string;
   baseRef: string;
   maxFindings: number;
+  verify: boolean;
   outDir: string;
 }
 
@@ -84,6 +85,8 @@ export async function reviewLocal(
     estimator: charsPerToken(),
     log,
     intent,
+    verify: args.verify,
+    skipped: change.skipped,
   });
 
   const warnings: string[] = [];
@@ -109,6 +112,7 @@ export async function reviewLocal(
       generatedAt: (deps.now ?? (() => new Date()))(),
     },
     findings: result.findings,
+    general: result.general,
     skipped: change.skipped,
     failed: result.failed,
     stats: result.stats,

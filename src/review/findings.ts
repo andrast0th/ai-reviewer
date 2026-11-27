@@ -34,6 +34,24 @@ export interface LocatedFinding extends Finding {
   onChangedLine: boolean;
   /** The actual file lines at line..endLine (what the report shows instead of the raw quote). */
   snippet: string;
+  /** Outcome of the verification pass; "skipped" when it didn't run for this finding. */
+  verification: Verification;
+  /** Which pass produced it. */
+  pass: "file" | "cross-file";
+}
+
+export type Verification = "confirmed" | "unverified" | "skipped";
+
+/**
+ * A finding about the change as a whole, with no place in the code: work the ticket asks for
+ * that no file does, or changed logic with no test changes. Shown in the report's Overall section.
+ */
+export interface GeneralFinding {
+  severity: Severity;
+  category: Category;
+  issue: string;
+  suggestion: string;
+  confidence: Confidence;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -191,7 +209,14 @@ export function locate(
     .split(/\r?\n/)
     .slice(loc.line - 1, loc.endLine)
     .join("\n");
-  return { ...f, ...loc, onChangedLine: overlaps(loc, changed), snippet };
+  return {
+    ...f,
+    ...loc,
+    onChangedLine: overlaps(loc, changed),
+    snippet,
+    verification: "skipped",
+    pass: "file",
+  };
 }
 
 // ------------------------------------------------------------ ranking
@@ -209,17 +234,104 @@ export function compareFindings(a: LocatedFinding, b: LocatedFinding): number {
   );
 }
 
-/** Exact-duplicate removal (same place, same category). Fuzzy merging comes in milestone 5. */
-export function dedupeExact(fs: readonly LocatedFinding[]): LocatedFinding[] {
-  const seen = new Set<string>();
-  return fs.filter((f) => {
-    const k = `${f.file}\0${f.line}\0${f.category}`;
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
+const STOP_WORDS = new Set(
+  "a an the is are be to of in on for and or not no this that it its with as at by from when if can may will could would should".split(
+    " ",
+  ),
+);
+
+function words(s: string): Set<string> {
+  return new Set(
+    s
+      .toLowerCase()
+      .split(/[^a-z0-9_]+/)
+      .filter((w) => w.length > 2 && !STOP_WORDS.has(w)),
+  );
+}
+
+/** Jaccard similarity of the content words of two texts (0..1). */
+export function similarity(a: string, b: string): number {
+  const wa = words(a);
+  const wb = words(b);
+  if (wa.size === 0 || wb.size === 0) return 0;
+  let inter = 0;
+  for (const w of wa) if (wb.has(w)) inter++;
+  return inter / (wa.size + wb.size - inter);
+}
+
+const NEAR_LINES = 3;
+const SIMILAR_ENOUGH = 0.35;
+
+/** Two findings about the same place: same file, lines overlapping or within a few lines. */
+function samePlace(a: LocatedFinding, b: LocatedFinding): boolean {
+  return a.file === b.file && a.line <= b.endLine + NEAR_LINES && b.line <= a.endLine + NEAR_LINES;
+}
+
+/**
+ * Sort by rank, then drop findings that repeat a better-ranked one: same place and either the
+ * same category or a similar description. Different problems on the same line survive.
+ */
+export function rankAndMerge(fs: readonly LocatedFinding[]): {
+  findings: LocatedFinding[];
+  merged: number;
+} {
+  const kept: LocatedFinding[] = [];
+  for (const f of [...fs].sort(compareFindings)) {
+    const dup = kept.some(
+      (k) =>
+        samePlace(k, f) &&
+        (k.category === f.category || similarity(k.issue, f.issue) >= SIMILAR_ENOUGH),
+    );
+    if (!dup) kept.push(f);
+  }
+  return { findings: kept, merged: fs.length - kept.length };
 }
 
 export function rankAndCap(fs: readonly LocatedFinding[], max: number): LocatedFinding[] {
-  return dedupeExact([...fs].sort(compareFindings)).slice(0, max);
+  return rankAndMerge(fs).findings.slice(0, max);
+}
+
+const GENERAL_CATEGORIES: readonly Category[] = ["intent-mismatch", "missing-tests"];
+
+export interface CrossFileNormalized {
+  /** Findings with a file and quote; still need quote validation. */
+  located: Finding[];
+  general: GeneralFinding[];
+  invalid: number;
+}
+
+/**
+ * Cross-file results name their own file. Items with a known file and a quote go through quote
+ * validation like any other finding; quote-less items are kept only for the categories that are
+ * about the change as a whole (intent-mismatch, missing-tests).
+ */
+export function normalizeCrossFindings(
+  raw: { findings: unknown[] } | unknown[],
+  knownFiles: ReadonlySet<string>,
+): CrossFileNormalized {
+  const items = Array.isArray(raw) ? raw : raw.findings;
+  const out: CrossFileNormalized = { located: [], general: [], invalid: 0 };
+  for (const it of items) {
+    if (!isRecord(it)) {
+      out.invalid++;
+      continue;
+    }
+    const file = typeof it.file === "string" ? it.file.trim().replace(/^\.?\//, "") : "";
+    const hasQuote = typeof it.quote === "string" && it.quote.trim() !== "";
+    const norm = normalizeFindings([{ ...it, quote: hasQuote ? it.quote : "-" }], file);
+    const f = norm.findings[0];
+    if (!f) {
+      out.invalid++;
+      continue;
+    }
+    if (hasQuote && knownFiles.has(file)) {
+      out.located.push(f);
+    } else if (!hasQuote && GENERAL_CATEGORIES.includes(f.category)) {
+      const { severity, category, issue, suggestion, confidence } = f;
+      out.general.push({ severity, category, issue, suggestion, confidence });
+    } else {
+      out.invalid++;
+    }
+  }
+  return out;
 }

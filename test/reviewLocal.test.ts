@@ -6,7 +6,15 @@ import { after, before, describe, it } from "node:test";
 import { defaultIo, type Io, main } from "../src/cli.ts";
 import { runGit } from "../src/git.ts";
 import { PROMPT_VERSION } from "../src/review/prompts.ts";
-import { fakeFetch, fixtureJson, type RecordedCall } from "./helpers.ts";
+import {
+  fakeFetch,
+  fixtureJson,
+  type LlmScript,
+  llmByPass,
+  promptKind,
+  type RecordedCall,
+  userMessage,
+} from "./helpers.ts";
 
 // A small SYNTHETIC repo: made-up code written for this test only.
 const TRANSFER_BASE = `package com.acme.bank;
@@ -95,51 +103,43 @@ async function makeRepo(dir: string): Promise<void> {
 }
 
 const CHAT = "POST https://llm.test/v1/chat/completions";
-const reply = (content: string) => ({
-  json: { choices: [{ message: { role: "assistant", content }, finish_reason: "stop" }] },
-});
 
-function llmRoutes() {
+const perFileJava = (user: string) =>
+  user.includes("TransferService.java")
+    ? `Here is my review:\n\`\`\`json\n${JSON.stringify({
+        findings: [
+          {
+            quote: "+    repo.save(a);",
+            severity: "high",
+            category: "concurrency",
+            issue: "The two saves are not in one transaction; a failure between them loses money.",
+            suggestion: "Wrap both saves in a single transaction.",
+            confidence: "high",
+          },
+          {
+            quote: "ledger.post(amount);",
+            severity: "high",
+            category: "bug",
+            issue: "Hallucinated line that is not in the file.",
+            suggestion: "-",
+            confidence: "high",
+          },
+          {
+            quote: "Account a = repo.find(from);",
+            severity: "medium",
+            category: "error-handling",
+            issue: "The removed amount check lets negative transfers through.",
+            suggestion: "Restore the signum() check.",
+            confidence: "medium",
+          },
+        ],
+      })}\n\`\`\``
+    : { findings: [] };
+
+function llmRoutes(script: LlmScript = {}) {
   return {
     "GET https://llm.test/v1/models": { json: fixtureJson("llm/models-vllm.json") },
-    [CHAT]: (call: RecordedCall) => {
-      const user =
-        (call.body as { messages: Array<{ content: string }> }).messages[1]?.content ?? "";
-      if (user.includes("TransferService.java")) {
-        return reply(
-          `Here is my review:\n\`\`\`json\n${JSON.stringify({
-            findings: [
-              {
-                quote: "+    repo.save(a);",
-                severity: "high",
-                category: "concurrency",
-                issue:
-                  "The two saves are not in one transaction; a failure between them loses money.",
-                suggestion: "Wrap both saves in a single transaction.",
-                confidence: "high",
-              },
-              {
-                quote: "ledger.post(amount);",
-                severity: "high",
-                category: "bug",
-                issue: "Hallucinated line that is not in the file.",
-                suggestion: "-",
-                confidence: "high",
-              },
-              {
-                quote: "Account a = repo.find(from);",
-                severity: "medium",
-                category: "error-handling",
-                issue: "The removed amount check lets negative transfers through.",
-                suggestion: "Restore the signum() check.",
-                confidence: "medium",
-              },
-            ],
-          })}\n\`\`\``,
-        );
-      }
-      return reply('{"findings": []}');
-    },
+    [CHAT]: llmByPass({ perFile: perFileJava, ...script }),
   } as Parameters<typeof fakeFetch>[0];
 }
 
@@ -202,12 +202,9 @@ describe("mr-reviewer review-local", () => {
 
     // Only reviewable files reached the LLM, each once, with temperature 0.
     const chats = r.f.calls.filter((c) => c.method === "POST");
-    const reviewed = chats.map((c) => {
-      const m = /Review the change to `([^`]+)`/.exec(
-        (c.body as { messages: Array<{ content: string }> }).messages[1]?.content ?? "",
-      );
-      return m?.[1];
-    });
+    const reviewed = chats
+      .filter((c) => promptKind(userMessage(c)) === "per-file")
+      .map((c) => /Review the change to `([^`]+)`/.exec(userMessage(c))?.[1]);
     assert.deepEqual(reviewed.sort(), [
       "src/main/java/com/acme/bank/TransferService.java",
       "web/src/api.ts",
@@ -267,7 +264,7 @@ describe("mr-reviewer review-local", () => {
       assert.equal(r.code, 0, r.err);
       const md = await readFile(r.out.trim(), "utf8");
       assert.match(md, /## Findings \(1\)/);
-      assert.match(md, /1 more finding\(s\) were removed/);
+      assert.match(md, /1 lower-ranked finding\(s\) were left out by the cap of 1/);
       assert.match(md, /uncommitted changes; only committed changes were reviewed/);
     } finally {
       await writeFile(path.join(repo, "web/src/api.ts"), API_HEAD);
@@ -275,12 +272,9 @@ describe("mr-reviewer review-local", () => {
   });
 
   it("keeps going when one file's reply is unusable", async () => {
-    const routes = llmRoutes();
-    const orig = routes[CHAT] as (c: RecordedCall) => ReturnType<typeof reply>;
-    routes[CHAT] = (c: RecordedCall) => {
-      const user = (c.body as { messages: Array<{ content: string }> }).messages[1]?.content ?? "";
-      return user.includes("api.ts") ? reply("I think it looks fine!") : orig(c);
-    };
+    const routes = llmRoutes({
+      perFile: (u) => (u.includes("`web/src/api.ts`") ? "I think it looks fine!" : perFileJava(u)),
+    });
     const r = await run([], fakeFetch(routes));
     assert.equal(r.code, 0, r.err);
     const md = await readFile(r.out.trim(), "utf8");
@@ -289,6 +283,111 @@ describe("mr-reviewer review-local", () => {
       /## Review failed for\n\n- `web\/src\/api\.ts`: LLM did not return valid JSON/,
     );
     assert.match(md, /## Findings \(2\)/);
+  });
+
+  describe("verification and cross-file passes", () => {
+    const posts = (f: { calls: RecordedCall[] }) =>
+      f.calls.filter((c) => c.method === "POST").map(userMessage);
+
+    it("drops findings the verifier rejects and marks unclear ones", async () => {
+      const r = await run(
+        [],
+        fakeFetch(
+          llmRoutes({
+            verify: (u) =>
+              u.includes("not in one transaction")
+                ? { verdict: "not-real", reason: "the repository call is transactional" }
+                : { verdict: "maybe?" },
+          }),
+        ),
+      );
+      assert.equal(r.code, 0, r.err);
+      const md = await readFile(r.out.trim(), "utf8");
+      assert.match(md, /## Findings \(1\)/);
+      assert.ok(!md.includes("not in one transaction"));
+      assert.match(md, /MEDIUM · error-handling/);
+      assert.match(md, /not verified \(verifier gave no clear answer\)/);
+      assert.match(md, /- verification: 2 checked, 1 rejected as not real, 1 unclear/);
+
+      // The verifier sees a numbered excerpt with markers, not just the quote.
+      const v = posts(r.f).find((u) => promptKind(u) === "verify" && u.includes("one transaction"));
+      assert.ok(v);
+      assert.match(v, /^\s*17 \+> {5}repo\.save\(a\);$/m);
+      assert.match(v, /The change is meant to: feature\/BANK-1-save/);
+    });
+
+    it("--no-verify skips the pass", async () => {
+      const r = await run(["--no-verify"]);
+      assert.equal(r.code, 0, r.err);
+      assert.ok(!posts(r.f).some((u) => promptKind(u) === "verify"));
+      const md = await readFile(r.out.trim(), "utf8");
+      assert.match(md, /## Findings \(2\)/);
+      assert.match(md, /- verification: off/);
+      assert.ok(!md.includes("· verified"));
+    });
+
+    it("adds cross-file findings and whole-change remarks", async () => {
+      const r = await run(
+        [],
+        fakeFetch(
+          llmRoutes({
+            crossFile: () => ({
+              findings: [
+                {
+                  file: "web/src/api.ts",
+                  // The model quotes the PUT line of the synthetic api.ts.
+                  quote: API_HEAD.split("\n").find((l) => l.includes('method: "PUT"')) ?? "",
+                  severity: "medium",
+                  category: "api-break",
+                  issue:
+                    "saveUser ignores the HTTP status, so a failed PUT looks like success to callers.",
+                  suggestion: "Check res.ok and throw on failure.",
+                  confidence: "high",
+                },
+                {
+                  file: "",
+                  quote: "",
+                  severity: "medium",
+                  category: "missing-tests",
+                  issue: "Transfer logic changed but no test was added or changed.",
+                  suggestion: "Add a test for a failing second save.",
+                  confidence: "high",
+                },
+              ],
+            }),
+          }),
+        ),
+      );
+      assert.equal(r.code, 0, r.err);
+      const md = await readFile(r.out.trim(), "utf8");
+      assert.match(
+        md,
+        /## Overall \(1\)\n\n- \*\*MEDIUM · missing-tests:\*\* Transfer logic changed/,
+      );
+      assert.match(md, /MEDIUM · api-break · `web\/src\/api\.ts:7`/);
+      assert.match(md, /confidence: high · verified · cross-file/);
+      assert.match(md, /- cross-file pass: 1 finding\(s\), 1 about the change as a whole/);
+
+      // The cross-file prompt carries the whole change, test-file info and earlier findings.
+      const cf = posts(r.f).find((u) => promptKind(u) === "cross-file");
+      assert.ok(cf);
+      assert.match(cf, /=== src\/main\/java\/com\/acme\/bank\/TransferService\.java\n@@ /);
+      assert.match(cf, /=== web\/src\/api\.ts/);
+      assert.match(cf, /=== not reviewed\n[\s\S]*gone\.js: deleted/);
+      assert.match(cf, /No test files were changed\./);
+      assert.match(
+        cf,
+        /## Already reported \(do not repeat\)\n- src\/main\/java\/com\/acme\/bank\/TransferService\.java:17 concurrency:/,
+      );
+    });
+
+    it("carries on when the cross-file pass returns garbage", async () => {
+      const r = await run([], fakeFetch(llmRoutes({ crossFile: () => "no idea, sorry" })));
+      assert.equal(r.code, 0, r.err);
+      const md = await readFile(r.out.trim(), "utf8");
+      assert.match(md, /- cross-file pass: failed \(LLM did not return valid JSON/);
+      assert.match(md, /## Findings \(2\)/);
+    });
   });
 
   it("explains a bad base ref", async () => {
