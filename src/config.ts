@@ -16,6 +16,11 @@ export interface LlmConfig {
 export interface GitlabConfig {
   url: string;
   workspace: string;
+  /**
+   * Host that git may contact over SSH. Defaults to the host of `url`. Clone URLs reported by
+   * the API must point at this host, so code is never fetched from anywhere else.
+   */
+  sshHost: string;
 }
 
 export interface JiraConfig {
@@ -129,7 +134,7 @@ export function parseConfig(text: string, file: string, env: Env): Config {
     "concurrency",
   ]);
   const gitlabT = optionalTable(root, "gitlab");
-  if (gitlabT) checkKeys(gitlabT, "gitlab", ["url", "workspace"]);
+  if (gitlabT) checkKeys(gitlabT, "gitlab", ["url", "workspace", "ssh_host"]);
   const jiraT = optionalTable(root, "jira");
   if (jiraT) checkKeys(jiraT, "jira", ["url", "key_pattern", "acceptance_criteria_field"]);
   const sonarT = optionalTable(root, "sonar");
@@ -155,6 +160,9 @@ export function parseConfig(text: string, file: string, env: Env): Config {
     ? {
         url: serviceUrl(reqStr(gitlabT, "gitlab", "url"), "gitlab.url"),
         workspace: expandHome(optStr(gitlabT, "gitlab", "workspace", "~/.cache/mr-reviewer/repos")),
+        sshHost:
+          optStr(gitlabT, "gitlab", "ssh_host", "").toLowerCase() ||
+          new URL(reqStr(gitlabT, "gitlab", "url")).hostname.toLowerCase(),
       }
     : null;
 

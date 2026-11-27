@@ -9,6 +9,7 @@ import type { NetworkSummary } from "./network.ts";
 import { CHECK_PING } from "./review/prompts.ts";
 import type { Secret, SecretName } from "./secrets.ts";
 import { SonarClient } from "./sonar.ts";
+import { probeGitlabSsh, type SshRunner } from "./ssh.ts";
 
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
 
@@ -25,6 +26,7 @@ export interface CheckContext {
   log: Logger;
   nodeVersion: string;
   fetch?: FetchFn;
+  ssh?: SshRunner;
 }
 
 function describeError(err: unknown): string {
@@ -135,6 +137,9 @@ async function checkGitlab(ctx: CheckContext): Promise<CheckResult> {
     status = "warn";
     lines.push(`could not read token scopes: ${describeError(err)}`);
   }
+  const ssh = await probeGitlabSsh(gitlab.sshHost, ctx.ssh);
+  lines.push(ssh.message);
+  if (!ssh.ok) status = "warn";
   return { service: "gitlab", status, lines };
 }
 

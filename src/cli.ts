@@ -2,9 +2,11 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { checksPassed, formatChecks, runChecks } from "./check.ts";
+import { dumpContext, type MrDeps, reviewMr } from "./commands/review.ts";
 import { reviewLocal } from "./commands/reviewLocal.ts";
 import { loadConfig, resolveConfigPath } from "./config.ts";
 import { ExitCode, exitCodeFor, UsageError } from "./errors.ts";
+import type { GitRunner } from "./git.ts";
 import type { FetchFn } from "./http.ts";
 import { createLogger } from "./log.ts";
 import {
@@ -21,21 +23,22 @@ import {
   type Secret,
   type SecretName,
 } from "./secrets.ts";
+import type { SshRunner } from "./ssh.ts";
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 
 const USAGE = `Usage: mr-reviewer <command> [options]
 
 Commands:
   check                          Test connectivity and auth for every configured service
-  review <mr_url>                Review a merge request              (not implemented yet: milestone 3)
-  review <project_path> <iid>
+  review <mr_url>                Review a GitLab merge request (read-only)
+  review <project_path> <iid>    ... or <project_path>!<iid>
   review-local <repo> [--base B] Review the committed changes of a local branch against B
                                  (default origin/main). No GitLab needed.
-  context <mr_url> --dump        Write the assembled prompt to a file (not implemented yet: milestone 3)
+  context <mr_url> [--dump]      Write the prompts a review would send to a local file (no LLM call)
 
-review-local options:
-  --base <ref>          Branch or commit to compare against (default: origin/main)
+Review options:
+  --base <ref>          review-local: branch or commit to compare against (default: origin/main)
   --max-findings <n>    Cap on reported findings (default: review.max_findings)
   --out <dir>           Where to write the report (default: ./reviews)
 
@@ -46,7 +49,7 @@ Global options:
   --version         Show the version
 `;
 
-const NOT_YET: Record<string, number> = { review: 3, context: 3 };
+const COMMANDS = new Set(["check", "review", "review-local", "context"]);
 
 export interface Io {
   argv: readonly string[];
@@ -61,6 +64,10 @@ export interface Io {
   reexec: (plan: Extract<NetworkSetup, { kind: "reexec" }>) => Promise<number>;
   cwd: string;
   fetch?: FetchFn;
+  /** Override how git runs (tests). */
+  git?: GitRunner;
+  /** Override how ssh runs (tests). */
+  ssh?: SshRunner;
 }
 
 export function defaultIo(): Io {
@@ -109,10 +116,7 @@ export async function main(io: Io): Promise<number> {
 
   const log = createLogger({ verbose: values.verbose ?? false, write: (l) => io.stderr(`${l}\n`) });
   try {
-    if (command in NOT_YET) {
-      throw new UsageError(`'${command}' is not implemented yet (milestone ${NOT_YET[command]})`);
-    }
-    if (command !== "check" && command !== "review-local") {
+    if (!COMMANDS.has(command)) {
       throw new UsageError(`unknown command '${command}'`);
     }
     if (command === "check" && positionals.length > 1) {
@@ -120,6 +124,9 @@ export async function main(io: Io): Promise<number> {
     }
     if (command === "review-local" && positionals.length !== 2) {
       throw new UsageError("usage: mr-reviewer review-local <repo_path> [--base <ref>]");
+    }
+    if ((command === "review" || command === "context") && ![2, 3].includes(positionals.length)) {
+      throw new UsageError(`usage: mr-reviewer ${command} <mr_url> | <project_path> <iid>`);
     }
     const maxFindings = parseMaxFindings(values["max-findings"]);
 
@@ -143,6 +150,35 @@ export async function main(io: Io): Promise<number> {
       }
     }
 
+    if (command === "review" || command === "context") {
+      const deps: MrDeps = {
+        cfg,
+        log,
+        gitlabToken: secrets.GITLAB_TOKEN?.value,
+        apiKey: secrets.LLM_API_KEY?.value ?? "",
+        toolVersion: VERSION,
+      };
+      if (io.fetch) deps.fetch = io.fetch;
+      if (io.git) deps.git = io.git;
+      const refArgs = positionals.slice(1);
+      const outDir = path.resolve(io.cwd, values.out ?? "reviews");
+      if (command === "context") {
+        const d = await dumpContext({ refArgs, outDir }, deps);
+        log.info(`${d.requests} request(s) written; nothing was sent to the LLM`);
+        io.stdout(`${d.path}\n`);
+        return ExitCode.Ok;
+      }
+      const res = await reviewMr(
+        { refArgs, outDir, maxFindings: maxFindings ?? cfg.review.maxFindings },
+        deps,
+      );
+      log.info(
+        `${res.findings} finding(s)${res.failedFiles ? `, ${res.failedFiles} file(s) failed` : ""}`,
+      );
+      io.stdout(`${res.reportPath}\n`);
+      return ExitCode.Ok;
+    }
+
     if (command === "review-local") {
       const deps: Parameters<typeof reviewLocal>[1] = {
         cfg,
@@ -151,6 +187,7 @@ export async function main(io: Io): Promise<number> {
         toolVersion: VERSION,
       };
       if (io.fetch) deps.fetch = io.fetch;
+      if (io.git) deps.git = io.git;
       const res = await reviewLocal(
         {
           repoDir: path.resolve(io.cwd, positionals[1] ?? "."),
@@ -174,6 +211,7 @@ export async function main(io: Io): Promise<number> {
       log,
       nodeVersion: io.nodeVersion,
     };
+    if (io.ssh) ctx.ssh = io.ssh;
     if (io.fetch) ctx.fetch = io.fetch;
     const results = await runChecks(ctx);
     io.stdout(formatChecks(ctx, results));
@@ -197,6 +235,7 @@ function parse(argv: readonly string[]) {
       base: { type: "string" },
       "max-findings": { type: "string" },
       out: { type: "string" },
+      dump: { type: "boolean" },
     },
   });
 }

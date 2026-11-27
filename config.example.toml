@@ -13,6 +13,7 @@ concurrency = 2
 [gitlab]
 url = "https://gitlab.example.com"
 workspace = "~/.cache/mr-reviewer/repos"
+# ssh_host = ""          # host git may clone from over SSH; defaults to the host of url
 
 # Optional. Remove the section to run without Jira.
 [jira]

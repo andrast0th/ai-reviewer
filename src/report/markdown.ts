@@ -110,3 +110,14 @@ export function localReportPath(
   const name = `local-${slug(path.basename(path.resolve(repoDir)))}-${slug(branch ?? "detached")}-${headSha.slice(0, 8)}.md`;
   return path.join(outDir, name);
 }
+
+/** `<outDir>/<group-project>-<iid>-<sha8><suffix>` */
+export function mrReportPath(
+  outDir: string,
+  projectPath: string,
+  iid: number,
+  headSha: string,
+  suffix = ".md",
+): string {
+  return path.join(outDir, `${slug(projectPath)}-${iid}-${headSha.slice(0, 8)}${suffix}`);
+}

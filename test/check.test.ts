@@ -85,6 +85,7 @@ describe("mr-reviewer check", () => {
       reexec: async () => {
         throw new Error("should not re-exec");
       },
+      ssh: async () => ({ code: 0, output: "Welcome to GitLab, @test.user!" }),
     };
     return main(io).then((code) => ({ code, out: out.join(""), err: err.join("") }));
   }
@@ -99,6 +100,7 @@ describe("mr-reviewer check", () => {
     assert.match(r.out, /✓ gitlab https:\/\/gitlab\.test/);
     assert.match(r.out, /GitLab 17\.5\.4-ee \(EE\)/);
     assert.match(r.out, /token scopes: api/);
+    assert.match(r.out, /SSH ok \(git@gitlab\.test as test\.user\)/);
     assert.match(r.out, /✓ jira {3}https:\/\/jira\.test/);
     assert.match(r.out, /✓ sonar {2}https:\/\/sonar\.test/);
     assert.match(r.out, /edition: developer \(MR\/branch analysis available\)/);
@@ -142,16 +144,13 @@ describe("mr-reviewer check", () => {
     assert.match(r.err, /config file not found/);
   });
 
-  it("handles usage errors and unimplemented commands", async () => {
+  it("handles usage errors and unknown commands", async () => {
     assert.equal((await run([], {}, fakeFetch({}))).code, 2);
     assert.equal((await run(["--help"], {}, fakeFetch({}))).code, 0);
     assert.equal((await run(["--bogus"], {}, fakeFetch({}))).code, 2);
-    const r = await run(
-      ["review", "https://gitlab.test/g/r/-/merge_requests/1"],
-      {},
-      fakeFetch({}),
-    );
+    const r = await run(["frobnicate"], {}, fakeFetch({}));
     assert.equal(r.code, 2);
-    assert.match(r.err, /not implemented yet \(milestone 3\)/);
+    assert.match(r.err, /unknown command .frobnicate./);
+    assert.equal((await run(["review"], {}, fakeFetch({}))).code, 2);
   });
 });

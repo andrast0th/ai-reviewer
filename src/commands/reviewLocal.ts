@@ -2,15 +2,14 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Config } from "../config.ts";
 import { charsPerToken } from "../context/tokens.ts";
-import { HttpError } from "../errors.ts";
 import { GitRepo, type GitRunner } from "../git.ts";
 import type { FetchFn } from "../http.ts";
-import { contextLimitFor, LlmClient } from "../llm.ts";
 import type { Logger } from "../log.ts";
 import { localReportPath, renderReport } from "../report/markdown.ts";
 import { reviewFiles } from "../review/engine.ts";
-import { collectLocalChange } from "../review/localSource.ts";
 import { PROMPT_VERSION } from "../review/prompts.ts";
+import { collectLocalChange } from "../review/sources.ts";
+import { createLlm, detectContext } from "./common.ts";
 
 export interface ReviewLocalArgs {
   repoDir: string;
@@ -35,20 +34,6 @@ export interface ReviewLocalOutcome {
   failedFiles: number;
 }
 
-/** Ask the server for the context window; fall back to config if it doesn't say. */
-async function detectContext(llm: LlmClient, cfg: Config, log: Logger) {
-  try {
-    const limit = contextLimitFor(await llm.listModels(), cfg.llm.model);
-    if (limit !== undefined) return { tokens: limit, source: "server" as const };
-    log.debug("server did not report max_model_len; using llm.max_context_tokens");
-  } catch (err) {
-    // Some OpenAI-compatible servers don't implement /models. Anything else is a real failure.
-    if (!(err instanceof HttpError && err.status === 404)) throw err;
-    log.warn("LLM server has no /models endpoint; using llm.max_context_tokens");
-  }
-  return { tokens: cfg.llm.maxContextTokens, source: "config" as const };
-}
-
 export async function reviewLocal(
   args: ReviewLocalArgs,
   deps: ReviewLocalDeps,
@@ -60,13 +45,7 @@ export async function reviewLocal(
     `${change.files.length} file(s) to review, ${change.skipped.length} skipped (base ${args.baseRef} @ ${change.baseSha.slice(0, 8)}, head ${change.headSha.slice(0, 8)})`,
   );
 
-  const llmOpts: ConstructorParameters<typeof LlmClient>[0] = {
-    cfg: cfg.llm,
-    apiKey: deps.apiKey,
-    log,
-  };
-  if (deps.fetch) llmOpts.fetch = deps.fetch;
-  const llm = new LlmClient(llmOpts);
+  const llm = createLlm(cfg, deps.apiKey, log, deps.fetch);
   const ctx =
     change.files.length > 0
       ? await detectContext(llm, cfg, log)

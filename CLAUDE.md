@@ -47,12 +47,14 @@ src/
   http.ts               # fetch wrapper: timeouts (AbortSignal.timeout), retries with backoff, typed errors
   secrets.ts            # env vars, then macOS keychain via `security find-generic-password`
   log.ts                # tiny leveled logger to stderr; --verbose; redaction helper
-  mrUrl.ts              # parse a GitLab MR URL → { host, projectPath, iid }
+  mrUrl.ts              # parse <mr_url> / <project> <iid> / <project>!<iid> (must be on the configured GitLab)
+  workspace.ts          # bare SSH clone cache: clone once, then fetch target branch + refs/merge-requests/<iid>/head
+  ssh.ts                # `ssh -T` probe for `check` (batch mode, strict host keys)
   gitlab.ts             # MR metadata, diffs, diff_refs, version check, (opt) draft notes
   git.ts                # execFile wrappers (never a shell string): clone/fetch over SSH, worktrees, diff
   diff.ts               # unified-diff parser (hunks, old/new line numbers, changed lines)
   text.ts               # small shared text helpers (Markdown fences)
-  commands/             # one module per CLI command (reviewLocal.ts, ...)
+  commands/             # one module per CLI command (review.ts, reviewLocal.ts, common.ts)
   jira.ts               # find issue key, fetch summary/description/(opt) acceptance criteria field
   sonar.ts              # (opt) fetch issues/hotspots for branch/MR; (opt) run sonar-scanner
   llm.ts                # OpenAI-compatible chat client, JSON extraction, retries
@@ -67,7 +69,7 @@ src/
     engine.ts           # orchestration: per-file pass → cross-file pass → verify pass
     prompts.ts          # all prompt templates live here, nowhere else
     findings.ts         # Finding type + guard, quote validation, line mapping, dedupe
-    localSource.ts      # collect a local branch's changes (review-local)
+    sources.ts          # turn changed-file lists (local git or GitLab diffs API) into review inputs
   report/
     markdown.ts         # local report with file:line references
     gitlabDraft.ts      # map findings → draft note positions + summary draft
@@ -80,7 +82,7 @@ test/
 
 Input is a pasted MR URL, e.g. `https://gitlab.example.com/group/sub/repo/-/merge_requests/123`. `<project_path> <iid>` is accepted as well. One MR per run.
 
-1. **GitLab:** fetch the MR (title, description, source/target branch, `diff_refs`: `base_sha`, `start_sha`, `head_sha`) and its diffs (`GET /projects/:id/merge_requests/:iid/diffs`, paginated). Get the full files from a local clone: clone over **SSH** with the user's existing keys (`ssh_url_to_repo` from the project API) into the cache workspace once, then `git fetch` and add a worktree at `head_sha` on later runs.
+1. **GitLab:** fetch the MR (title, description, source/target branch, `diff_refs`: `base_sha`, `start_sha`, `head_sha`) and its diffs (`GET /projects/:id/merge_requests/:iid/diffs`, paginated). Get the diffs (`-U15`) and full files from a local clone: a **bare** clone over **SSH** with the user's existing keys (`ssh_url_to_repo` from the project API, which must point at `gitlab.ssh_host`) in the cache workspace, made once; later runs `git fetch` the target branch and `refs/merge-requests/<iid>/head` (works for forks). Diffs and files are read straight from commits (`git diff base_sha head_sha`, `git show head_sha:path`), so no worktree is needed yet; one is added in milestone 6 when repomix needs files on disk. GitLab's diffs API decides _which_ files changed (and flags generated files); the local clone supplies the content. The MR title and description go into the prompt as intent.
 2. **Jira (Data Center):** pull the issue key from the MR title, branch name or description (regex is configurable, default `[A-Z][A-Z0-9]+-\d+`). Fetch the summary and description, plus the acceptance criteria field if one is configured. Acceptance criteria are rare and inconsistent, so the summary and description are the main sources of intent. If there's no key or the fetch fails, carry on without it and say so in the report.
 3. **Sonar (optional, `--sonar`):** fetch existing issues for the MR or branch (`/api/issues/search`, plus `/api/hotspots/search`). Optionally run `sonar-scanner` locally first (`--sonar-scan`). Sonar findings go into the report and into the prompt as "already known, don't repeat". The edition and whether CI analyses MRs are unknown; `check` should report the server version and what the API allows.
 4. **Context building, in priority order, stopping at the token budget:**
@@ -225,7 +227,7 @@ Without `--draft`, nothing is written to GitLab. Install locally with `npm link`
 
 1. **Skeleton:** `package.json`, `tsconfig.json`, Biome, the bin bootstrap (proxy and CA), config, `http.ts`, `llm.ts` with JSON extraction, and `mr-reviewer check`.
 2. **`review-local`:** git diff, filters, the built-in packer, per-file pass, quote validation, Markdown report. Usable without any integrations.
-3. **GitLab read:** MR URL parsing, MR fetch, diffs, SSH clone and worktree checkout, `review <mr_url>`.
+3. **GitLab read:** MR URL parsing, MR fetch, diffs, SSH bare clone + fetch, `review <mr_url>`, `context --dump`, SSH probe in `check`.
 4. **Jira (DC):** key extraction, issue fetch, intent in the prompt.
 5. **Verification and cross-file passes** (including intent-mismatch and missing-tests), dedupe, ranking.
 6. **Neighbours and repomix `--compress`**, plus a token budget that drops layers.

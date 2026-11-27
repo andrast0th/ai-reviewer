@@ -127,6 +127,15 @@ export class HttpClient {
     return this.#parse(await this.request("GET", path, ro), "GET", path);
   }
 
+  /** GET JSON and also return the response headers (for pagination). */
+  async getJsonWithHeaders(
+    path: string,
+    ro: RequestOptions = {},
+  ): Promise<{ body: unknown; headers: Headers }> {
+    const res = await this.request("GET", path, ro);
+    return { body: this.#parse(res, "GET", path), headers: res.headers };
+  }
+
   async postJson(path: string, json: unknown, ro: RequestOptions = {}): Promise<unknown> {
     return this.#parse(await this.request("POST", path, { ...ro, json }), "POST", path);
   }

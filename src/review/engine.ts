@@ -11,7 +11,7 @@ import {
   normalizeFindings,
   rankAndCap,
 } from "./findings.ts";
-import { perFilePrompt } from "./prompts.ts";
+import { type Intent, perFilePrompt } from "./prompts.ts";
 
 /** A changed file ready for review: its parsed diff and its full content after the change. */
 export interface ReviewFile {
@@ -70,6 +70,20 @@ export interface EngineOptions {
   maxFindings: number;
   estimator: TokenEstimator;
   log: Logger;
+  /** What the change is meant to do (MR title/description, later the Jira ticket). */
+  intent?: Intent | undefined;
+}
+
+/** What planning a file's requests needs (no LLM): shared with `context --dump`. */
+export type PlanOptions = Pick<
+  EngineOptions,
+  "contextTokens" | "maxOutputTokens" | "estimator" | "intent"
+>;
+
+export interface FilePlan {
+  requests: ChatMessage[][];
+  withoutFullFile: boolean;
+  split: boolean;
 }
 
 const MIN_BUDGET_TOKENS = 512;
@@ -104,7 +118,7 @@ interface FileOutcome {
 }
 
 /** Tokens left for diff + file in one request, after the template and the reserved output. */
-export function chunkBudget(file: ReviewFile, opts: EngineOptions): number {
+export function chunkBudget(file: ReviewFile, opts: PlanOptions): number {
   const skeleton = perFilePrompt({
     path: file.path,
     language: languageOf(file.path),
@@ -112,6 +126,7 @@ export function chunkBudget(file: ReviewFile, opts: EngineOptions): number {
     fullFile: "",
     part: 1,
     parts: 2,
+    intent: opts.intent,
   });
   const templateTokens = opts.estimator.estimate(skeleton.map((m) => m.content).join("\n"));
   return (
@@ -119,7 +134,8 @@ export function chunkBudget(file: ReviewFile, opts: EngineOptions): number {
   );
 }
 
-async function reviewOne(file: ReviewFile, opts: EngineOptions): Promise<FileOutcome> {
+/** The LLM requests for one file, fitted to the context budget. */
+export function planFile(file: ReviewFile, opts: PlanOptions): FilePlan {
   const budget = chunkBudget(file, opts);
   if (budget < MIN_BUDGET_TOKENS) {
     throw new ConfigError(
@@ -127,26 +143,37 @@ async function reviewOne(file: ReviewFile, opts: EngineOptions): Promise<FileOut
     );
   }
   const chunks = chunkFileChange(file.diff, file.content, budget, opts.estimator);
-  const changed = changedNewLines(file.diff);
   const lang = languageOf(file.path);
+  return {
+    requests: chunks.map((c) =>
+      perFilePrompt({
+        path: file.path,
+        language: lang,
+        diff: c.diff,
+        fullFile: c.withFullFile ? file.content : undefined,
+        part: c.part,
+        parts: c.parts,
+        intent: opts.intent,
+      }),
+    ),
+    withoutFullFile: chunks.some((c) => !c.withFullFile),
+    split: chunks.length > 1,
+  };
+}
+
+async function reviewOne(file: ReviewFile, opts: EngineOptions): Promise<FileOutcome> {
+  const plan = planFile(file, opts);
+  const changed = changedNewLines(file.diff);
   const out: FileOutcome = {
     located: [],
     calls: 0,
     raw: 0,
     invalid: 0,
     unmatched: 0,
-    withoutFullFile: chunks.some((c) => !c.withFullFile),
-    split: chunks.length > 1,
+    withoutFullFile: plan.withoutFullFile,
+    split: plan.split,
   };
-  for (const c of chunks) {
-    const messages = perFilePrompt({
-      path: file.path,
-      language: lang,
-      diff: c.diff,
-      fullFile: c.withFullFile ? file.content : undefined,
-      part: c.part,
-      parts: c.parts,
-    });
+  for (const messages of plan.requests) {
     out.calls++;
     let reply: { findings: unknown[] } | unknown[];
     try {

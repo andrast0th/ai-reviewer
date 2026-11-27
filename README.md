@@ -4,7 +4,7 @@ A local CLI that reviews GitLab merge requests with the company's internal, self
 Code goes only to the internal LLM; nothing is sent to third parties. See `CLAUDE.md` for the
 full design.
 
-Status: **milestone 2**: `mr-reviewer check` and `mr-reviewer review-local`. Reviewing GitLab MRs comes in milestone 3.
+Status: **milestone 3**: `check`, `review <mr_url>`, `review-local` and `context`. Nothing is written to GitLab yet (draft reviews come in milestone 8).
 
 ## Requirements
 
@@ -69,6 +69,33 @@ For each configured service, `check` reports reachability, authentication and ve
 context size (from `/v1/models`) plus a tiny JSON round-trip, the GitLab version and token scopes, the Jira
 server type, and the Sonar edition. It exits 0 when nothing failed. `-v` adds request URLs and timings; request
 and response bodies and secrets are never logged.
+
+## Review a merge request
+
+```bash
+mr-reviewer review https://gitlab.example.com/group/repo/-/merge_requests/123
+```
+
+`mr-reviewer review group/repo 123` and `mr-reviewer review group/repo!123` work too. The URL must be on the configured
+`gitlab.url`. This is read-only: it needs `GITLAB_TOKEN` (`read_api` is enough) and SSH access to GitLab with your
+usual key (`mr-reviewer check` tests both).
+
+On the first run for a project, it makes a bare clone over SSH into `gitlab.workspace` (default
+`~/.cache/mr-reviewer/repos`). Later runs only fetch the target branch and the MR (`refs/merge-requests/<iid>/head`, so
+MRs from forks work). Your own clones are never touched. The clone URL GitLab reports must be on `gitlab.ssh_host`
+(default: the host of `gitlab.url`); anything else is refused.
+
+GitLab decides which files changed, and files it marks as generated are skipped. Diffs (15 lines of context) and full
+files come from the clone at the MR's head commit. The MR title and description are given to the model as intent.
+The report goes to `./reviews/<group-repo>-<iid>-<sha>.md`.
+
+To see exactly what would be sent, without calling the LLM:
+
+```bash
+mr-reviewer context https://gitlab.example.com/group/repo/-/merge_requests/123 --dump
+```
+
+This writes `./reviews/<group-repo>-<iid>-<sha>.prompts.md`. It contains code, so keep it local.
 
 ## Review a local branch
 
