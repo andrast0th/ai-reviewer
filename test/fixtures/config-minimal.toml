@@ -1,0 +1,6 @@
+[llm]
+base_url = "https://llm.test/v1/"
+model = "acme-coder-32b"
+
+[gitlab]
+url = "https://gitlab.test"

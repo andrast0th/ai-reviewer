@@ -1,0 +1,8 @@
+{
+  "id": 7,
+  "name": "mr-reviewer",
+  "revoked": false,
+  "scopes": ["api"],
+  "active": true,
+  "expires_at": "2027-03-01"
+}

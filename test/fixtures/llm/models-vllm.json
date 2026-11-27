@@ -1,0 +1,7 @@
+{
+  "object": "list",
+  "data": [
+    { "id": "acme-coder-32b", "object": "model", "owned_by": "vllm", "max_model_len": 65536 },
+    { "id": "acme-embed", "object": "model", "owned_by": "vllm" }
+  ]
+}
