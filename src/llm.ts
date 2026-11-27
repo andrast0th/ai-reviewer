@@ -1,5 +1,5 @@
 import type { LlmConfig } from "./config.ts";
-import { LlmError } from "./errors.ts";
+import { ConfigError, LlmError } from "./errors.ts";
 import { type FetchFn, HttpClient } from "./http.ts";
 import type { Logger } from "./log.ts";
 import { JSON_RETRY_NUDGE } from "./review/prompts.ts";
@@ -155,9 +155,12 @@ export function contextLimitFor(models: readonly ModelInfo[], modelId: string): 
 
 // ------------------------------------------------------------ client
 
+export const MISSING_LLM_KEY =
+  "LLM_API_KEY is not set (env or keychain); the internal LLM needs it as a bearer token";
+
 export interface LlmClientOptions {
   cfg: LlmConfig;
-  /** May be empty if the internal server needs no key. */
+  /** LLM_API_KEY; required, sent as `Authorization: Bearer <key>`. */
   apiKey: string;
   log: Logger;
   fetch?: FetchFn;
@@ -176,8 +179,9 @@ export class LlmClient {
   constructor(opts: LlmClientOptions) {
     this.#cfg = opts.cfg;
     this.#log = opts.log;
-    const headers: Record<string, string> = {};
-    if (opts.apiKey) headers.Authorization = `Bearer ${opts.apiKey}`;
+    // The internal LLM requires a bearer API key on every request.
+    if (!opts.apiKey.trim()) throw new ConfigError(MISSING_LLM_KEY);
+    const headers: Record<string, string> = { Authorization: `Bearer ${opts.apiKey.trim()}` };
     const httpOpts: ConstructorParameters<typeof HttpClient>[0] = {
       service: "llm",
       baseUrl: opts.cfg.baseUrl,

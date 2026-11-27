@@ -5,9 +5,10 @@ import { checksPassed, formatChecks, runChecks } from "./check.ts";
 import { dumpContext, type MrDeps, reviewMr } from "./commands/review.ts";
 import { reviewLocal } from "./commands/reviewLocal.ts";
 import { loadConfig, resolveConfigPath } from "./config.ts";
-import { ExitCode, exitCodeFor, UsageError } from "./errors.ts";
+import { ConfigError, ExitCode, exitCodeFor, UsageError } from "./errors.ts";
 import type { GitRunner } from "./git.ts";
 import type { FetchFn } from "./http.ts";
+import { MISSING_LLM_KEY } from "./llm.ts";
 import { createLogger } from "./log.ts";
 import {
   defaultNetworkDeps,
@@ -156,6 +157,11 @@ export async function main(io: Io): Promise<number> {
         secrets[name] = s;
         log.addSecret(s.value);
       }
+    }
+
+    // Fail before fetching or cloning anything: these commands call the LLM, which needs a key.
+    if ((command === "review" || command === "review-local") && !secrets.LLM_API_KEY) {
+      throw new ConfigError(MISSING_LLM_KEY);
     }
 
     if (command === "review" || command === "context") {

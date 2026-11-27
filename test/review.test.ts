@@ -342,12 +342,24 @@ describe("mr-reviewer review <mr_url>", () => {
     );
   });
 
+  it("needs the LLM key before doing anything", async () => {
+    const r = await run(["review", MR_URL], fakeFetch(routes()), { env: { LLM_API_KEY: "" } });
+    assert.equal(r.code, 3);
+    assert.match(r.err, /LLM_API_KEY is not set .*bearer token/);
+    assert.equal(r.f.calls.length, 0, "no GitLab, Jira or LLM calls without a key");
+  });
+
+  it("context --dump works without the LLM key (it calls no LLM)", async () => {
+    const r = await run(["context", MR_URL], fakeFetch(routes()), { env: { LLM_API_KEY: "" } });
+    assert.equal(r.code, 0, r.err);
+  });
+
   it("needs a token and a [gitlab] section", async () => {
     const out: string[] = [];
     const io: Io = {
       ...defaultIo(),
       argv: ["review", MR_URL, "--config", cfgPath],
-      env: {},
+      env: { LLM_API_KEY: "sk-test" },
       stdout: () => {},
       stderr: (s) => out.push(s),
       platform: "linux",

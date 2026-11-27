@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { LlmConfig } from "../src/config.ts";
-import { LlmError } from "../src/errors.ts";
+import { ConfigError, LlmError } from "../src/errors.ts";
 import { contextLimitFor, LlmClient, parseModels } from "../src/llm.ts";
 import { silentLogger } from "../src/log.ts";
 import { JSON_RETRY_NUDGE } from "../src/review/prompts.ts";
@@ -44,10 +44,21 @@ describe("LlmClient", () => {
     });
   });
 
-  it("omits the Authorization header when no key is configured", async () => {
+  it("refuses to run without an API key", () => {
     const f = fakeFetch({ [CHAT]: reply("x") });
-    await client(f, "").chat([{ role: "user", content: "hi" }]);
-    assert.equal(f.calls[0]?.headers.authorization, undefined);
+    for (const key of ["", "   "]) {
+      assert.throws(
+        () => client(f, key),
+        (e: unknown) => e instanceof ConfigError && /LLM_API_KEY is not set/.test(e.message),
+      );
+    }
+    assert.equal(f.calls.length, 0);
+  });
+
+  it("sends the bearer token on /models too", async () => {
+    const f = fakeFetch({ "GET https://llm.test/v1/models": { json: { data: [] } } });
+    await client(f, " sk-padded ").listModels();
+    assert.equal(f.calls[0]?.headers.authorization, "Bearer sk-padded");
   });
 
   it("chatJson parses fenced JSON on the first try", async () => {

@@ -131,6 +131,16 @@ describe("mr-reviewer check", () => {
     assert.match(r.out, /--draft \(draft notes\) will be refused/);
   });
 
+  it("fails the LLM check without an API key and calls nothing on the LLM", async () => {
+    const f = fakeFetch(routes());
+    const { LLM_API_KEY: _drop, ...rest } = ENV;
+    const r = await run(["check", "--config", cfgPath], rest, f);
+    assert.equal(r.code, 1);
+    assert.match(r.out, /✗ llm {4}https:\/\/llm\.test\/v1\n {9}LLM_API_KEY not set/);
+    assert.ok(!f.calls.some((c) => c.url.hostname === "llm.test"));
+    assert.match(r.out, /✓ gitlab/, "other services are still checked");
+  });
+
   it("fails gitlab without a token and skips disabled sections", async () => {
     await writeFile(path.join(dir, "min.toml"), CONFIG.split("[jira]")[0] ?? "");
     const f = fakeFetch(routes());

@@ -170,7 +170,11 @@ describe("mr-reviewer review-local", () => {
   });
   after(() => rm(root, { recursive: true, force: true }));
 
-  async function run(extra: string[], f = fakeFetch(llmRoutes())) {
+  async function run(
+    extra: string[],
+    f = fakeFetch(llmRoutes()),
+    env: Record<string, string> = { LLM_API_KEY: "sk-test" },
+  ) {
     const out: string[] = [];
     const err: string[] = [];
     const io: Io = {
@@ -186,7 +190,7 @@ describe("mr-reviewer review-local", () => {
         path.join(root, "reviews"),
         ...extra,
       ],
-      env: { LLM_API_KEY: "sk-test" },
+      env,
       stdout: (s) => out.push(s),
       stderr: (s) => err.push(s),
       platform: "linux",
@@ -480,6 +484,14 @@ describe("mr-reviewer review-local", () => {
       const md = await readFile(r.out.trim(), "utf8");
       assert.match(md, /no local repomix was found; used the built-in packer/);
     });
+  });
+
+  it("needs LLM_API_KEY and stops before touching anything", async () => {
+    const f = fakeFetch(llmRoutes());
+    const r = await run([], f, {});
+    assert.equal(r.code, 3);
+    assert.match(r.err, /LLM_API_KEY is not set/);
+    assert.equal(f.calls.length, 0);
   });
 
   it("explains a bad base ref", async () => {

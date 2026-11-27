@@ -36,12 +36,12 @@ Unknown keys are rejected so typos surface, and so are keys that look like secre
 
 Secrets come only from environment variables or the macOS keychain, never from the config file:
 
-| Name           | Used for                                                    |
-| -------------- | ----------------------------------------------------------- |
-| `LLM_API_KEY`  | internal LLM (optional if the server needs no key)          |
-| `GITLAB_TOKEN` | GitLab PAT; `api` scope for `--draft`, otherwise `read_api` |
-| `JIRA_TOKEN`   | Jira Data Center PAT (only if `[jira]` is configured)       |
-| `SONAR_TOKEN`  | SonarQube token (only if `[sonar]` is enabled)              |
+| Name           | Used for                                                          |
+| -------------- | ----------------------------------------------------------------- |
+| `LLM_API_KEY`  | internal LLM, **required**; sent as `Authorization: Bearer <key>` |
+| `GITLAB_TOKEN` | GitLab PAT; `api` scope for `--draft`, otherwise `read_api`       |
+| `JIRA_TOKEN`   | Jira Data Center PAT (only if `[jira]` is configured)             |
+| `SONAR_TOKEN`  | SonarQube token (only if `[sonar]` is enabled)                    |
 
 Environment variables win. To store a secret in the keychain instead (it prompts for the value):
 

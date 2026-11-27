@@ -45,10 +45,12 @@ async function checkLlm(ctx: CheckContext): Promise<CheckResult> {
   const { cfg } = ctx;
   const key = ctx.secrets.LLM_API_KEY;
   const lines = [cfg.llm.baseUrl, secretLine("LLM_API_KEY", key)];
-  let status: CheckStatus = key ? "ok" : "warn";
+  // The internal LLM requires a bearer API key; without one nothing else can be checked.
+  if (!key) return { service: "llm", status: "fail", lines };
+  let status: CheckStatus = "ok";
   const opts: ConstructorParameters<typeof LlmClient>[0] = {
     cfg: cfg.llm,
-    apiKey: key?.value ?? "",
+    apiKey: key.value,
     log: ctx.log,
   };
   if (ctx.fetch) opts.fetch = ctx.fetch;
