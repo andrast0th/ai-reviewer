@@ -50,6 +50,9 @@ src/
   mrUrl.ts              # parse a GitLab MR URL → { host, projectPath, iid }
   gitlab.ts             # MR metadata, diffs, diff_refs, version check, (opt) draft notes
   git.ts                # execFile wrappers (never a shell string): clone/fetch over SSH, worktrees, diff
+  diff.ts               # unified-diff parser (hunks, old/new line numbers, changed lines)
+  text.ts               # small shared text helpers (Markdown fences)
+  commands/             # one module per CLI command (reviewLocal.ts, ...)
   jira.ts               # find issue key, fetch summary/description/(opt) acceptance criteria field
   sonar.ts              # (opt) fetch issues/hotspots for branch/MR; (opt) run sonar-scanner
   llm.ts                # OpenAI-compatible chat client, JSON extraction, retries
@@ -64,6 +67,7 @@ src/
     engine.ts           # orchestration: per-file pass → cross-file pass → verify pass
     prompts.ts          # all prompt templates live here, nowhere else
     findings.ts         # Finding type + guard, quote validation, line mapping, dedupe
+    localSource.ts      # collect a local branch's changes (review-local)
   report/
     markdown.ts         # local report with file:line references
     gitlabDraft.ts      # map findings → draft note positions + summary draft
@@ -198,6 +202,8 @@ use_system_ca = true
 proxy = ""
 no_proxy = ""
 ```
+
+Only `[llm]` is required; `[gitlab]`, `[jira]` and `[sonar]` are needed only by the commands that use them.
 
 Env: `LLM_API_KEY`, `GITLAB_TOKEN`, `JIRA_TOKEN`, `SONAR_TOKEN`.
 

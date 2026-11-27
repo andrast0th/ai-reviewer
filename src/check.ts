@@ -102,11 +102,13 @@ async function checkLlm(ctx: CheckContext): Promise<CheckResult> {
 }
 
 async function checkGitlab(ctx: CheckContext): Promise<CheckResult> {
+  const gitlab = ctx.cfg.gitlab;
+  if (!gitlab) return { service: "gitlab", status: "skip", lines: ["no [gitlab] section"] };
   const token = ctx.secrets.GITLAB_TOKEN;
-  const lines = [ctx.cfg.gitlab.url, secretLine("GITLAB_TOKEN", token)];
+  const lines = [gitlab.url, secretLine("GITLAB_TOKEN", token)];
   if (!token) return { service: "gitlab", status: "fail", lines };
   const opts: ConstructorParameters<typeof GitlabClient>[0] = {
-    cfg: ctx.cfg.gitlab,
+    cfg: gitlab,
     token: token.value,
     log: ctx.log,
   };

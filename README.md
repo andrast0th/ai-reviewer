@@ -4,7 +4,7 @@ A local CLI that reviews GitLab merge requests with the company's internal, self
 Code goes only to the internal LLM; nothing is sent to third parties. See `CLAUDE.md` for the
 full design.
 
-Status: **milestone 1** (skeleton + `mr-reviewer check`). Review commands come in later milestones.
+Status: **milestone 2**: `mr-reviewer check` and `mr-reviewer review-local`. Reviewing GitLab MRs comes in milestone 3.
 
 ## Requirements
 
@@ -69,6 +69,26 @@ For each configured service, `check` reports reachability, authentication and ve
 context size (from `/v1/models`) plus a tiny JSON round-trip, the GitLab version and token scopes, the Jira
 server type, and the Sonar edition. It exits 0 when nothing failed. `-v` adds request URLs and timings; request
 and response bodies and secrets are never logged.
+
+## Review a local branch
+
+```bash
+mr-reviewer review-local ~/dev/some-service --base origin/main
+```
+
+This reviews the **committed** changes on the current branch against its merge-base with `--base` (default
+`origin/main`), the same as `git diff origin/main...HEAD`. Uncommitted changes are ignored, and the report says so.
+Only `[llm]` is needed in the config; GitLab, Jira and Sonar are not used.
+
+For each changed file, the diff (15 lines of context) and the full file go to the LLM in a single request. A file that
+doesn't fit the context window is sent as the diff only, and if it is still too big, in parts. Every finding must quote
+the code; findings whose quote is not in the file are dropped, and line numbers come from the quote, never from the
+model. Deleted, binary and excluded files (`review.exclude`: lockfiles, build output, generated code, Markdown) are
+listed as not reviewed. A file whose reply can't be used is listed as failed, and the review carries on.
+
+The report is written to `./reviews/local-<repo>-<branch>-<sha>.md` (`--out <dir>` to change), and its path is printed
+on stdout. `--max-findings <n>` overrides `review.max_findings`. The report header records the model, context size
+and prompt version so runs can be compared.
 
 ## Development
 

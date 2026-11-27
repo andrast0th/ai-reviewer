@@ -35,7 +35,7 @@ describe("config", () => {
     assert.equal(cfg.review.maxFindings, 10);
     assert.equal(cfg.review.verify, true);
     assert.deepEqual(cfg.review.exclude, DEFAULT_EXCLUDE);
-    assert.ok(path.isAbsolute(cfg.gitlab.workspace));
+    assert.ok(path.isAbsolute(cfg.gitlab?.workspace ?? ""));
   });
 
   it("lets LLM_BASE_URL override llm.base_url", () => {
@@ -45,9 +45,9 @@ describe("config", () => {
     );
   });
 
-  it("requires [llm] and [gitlab]", () => {
+  it("requires [llm]; [gitlab] is optional", () => {
     rejects('[gitlab]\nurl = "https://g.test"', /missing \[llm\]/);
-    rejects('[llm]\nbase_url = "https://l.test"\nmodel = "m"', /missing \[gitlab\]/);
+    assert.equal(parse('[llm]\nbase_url = "https://l.test"\nmodel = "m"').gitlab, null);
     rejects(
       '[llm]\nbase_url = "https://l.test"\n[gitlab]\nurl = "https://g.test"',
       /llm\.model is required/,

@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 import { parseArgs } from "node:util";
 import { checksPassed, formatChecks, runChecks } from "./check.ts";
+import { reviewLocal } from "./commands/reviewLocal.ts";
 import { loadConfig, resolveConfigPath } from "./config.ts";
 import { ExitCode, exitCodeFor, UsageError } from "./errors.ts";
 import type { FetchFn } from "./http.ts";
@@ -20,7 +22,7 @@ import {
   type SecretName,
 } from "./secrets.ts";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
 const USAGE = `Usage: mr-reviewer <command> [options]
 
@@ -28,8 +30,14 @@ Commands:
   check                          Test connectivity and auth for every configured service
   review <mr_url>                Review a merge request              (not implemented yet: milestone 3)
   review <project_path> <iid>
-  review-local <repo> --base B   Review a local branch, no GitLab    (not implemented yet: milestone 2)
+  review-local <repo> [--base B] Review the committed changes of a local branch against B
+                                 (default origin/main). No GitLab needed.
   context <mr_url> --dump        Write the assembled prompt to a file (not implemented yet: milestone 3)
+
+review-local options:
+  --base <ref>          Branch or commit to compare against (default: origin/main)
+  --max-findings <n>    Cap on reported findings (default: review.max_findings)
+  --out <dir>           Where to write the report (default: ./reviews)
 
 Global options:
   --config <path>   Config file (default: $MR_REVIEWER_CONFIG or ~/.config/mr-reviewer/config.toml)
@@ -38,7 +46,7 @@ Global options:
   --version         Show the version
 `;
 
-const NOT_YET: Record<string, number> = { review: 3, "review-local": 2, context: 3 };
+const NOT_YET: Record<string, number> = { review: 3, context: 3 };
 
 export interface Io {
   argv: readonly string[];
@@ -51,6 +59,7 @@ export interface Io {
   network: NetworkDeps;
   /** Re-run this process with extra env/flags; resolves to the child's exit code. */
   reexec: (plan: Extract<NetworkSetup, { kind: "reexec" }>) => Promise<number>;
+  cwd: string;
   fetch?: FetchFn;
 }
 
@@ -61,6 +70,7 @@ export function defaultIo(): Io {
     stdout: (s) => process.stdout.write(s),
     stderr: (s) => process.stderr.write(s),
     platform: process.platform,
+    cwd: process.cwd(),
     nodeVersion: process.version,
     execFile: defaultExecFile,
     network: defaultNetworkDeps(process.env),
@@ -102,8 +112,16 @@ export async function main(io: Io): Promise<number> {
     if (command in NOT_YET) {
       throw new UsageError(`'${command}' is not implemented yet (milestone ${NOT_YET[command]})`);
     }
-    if (command !== "check") throw new UsageError(`unknown command '${command}'`);
-    if (positionals.length > 1) throw new UsageError("check takes no arguments");
+    if (command !== "check" && command !== "review-local") {
+      throw new UsageError(`unknown command '${command}'`);
+    }
+    if (command === "check" && positionals.length > 1) {
+      throw new UsageError("check takes no arguments");
+    }
+    if (command === "review-local" && positionals.length !== 2) {
+      throw new UsageError("usage: mr-reviewer review-local <repo_path> [--base <ref>]");
+    }
+    const maxFindings = parseMaxFindings(values["max-findings"]);
 
     const cfg = await loadConfig(resolveConfigPath(values.config, io.env), io.env);
     const net = await setupNetwork(cfg.network, io.network);
@@ -123,6 +141,30 @@ export async function main(io: Io): Promise<number> {
         secrets[name] = s;
         log.addSecret(s.value);
       }
+    }
+
+    if (command === "review-local") {
+      const deps: Parameters<typeof reviewLocal>[1] = {
+        cfg,
+        log,
+        apiKey: secrets.LLM_API_KEY?.value ?? "",
+        toolVersion: VERSION,
+      };
+      if (io.fetch) deps.fetch = io.fetch;
+      const res = await reviewLocal(
+        {
+          repoDir: path.resolve(io.cwd, positionals[1] ?? "."),
+          baseRef: values.base ?? "origin/main",
+          maxFindings: maxFindings ?? cfg.review.maxFindings,
+          outDir: path.resolve(io.cwd, values.out ?? "reviews"),
+        },
+        deps,
+      );
+      log.info(
+        `${res.findings} finding(s)${res.failedFiles ? `, ${res.failedFiles} file(s) failed` : ""}`,
+      );
+      io.stdout(`${res.reportPath}\n`);
+      return ExitCode.Ok;
     }
 
     const ctx: Parameters<typeof runChecks>[0] = {
@@ -152,6 +194,18 @@ function parse(argv: readonly string[]) {
       verbose: { type: "boolean", short: "v" },
       help: { type: "boolean", short: "h" },
       version: { type: "boolean" },
+      base: { type: "string" },
+      "max-findings": { type: "string" },
+      out: { type: "string" },
     },
   });
+}
+
+function parseMaxFindings(v: string | undefined): number | undefined {
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 1 || n > 100) {
+    throw new UsageError("--max-findings must be an integer between 1 and 100");
+  }
+  return n;
 }

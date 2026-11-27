@@ -47,7 +47,8 @@ export interface Config {
   /** The file the config was loaded from. */
   path: string;
   llm: LlmConfig;
-  gitlab: GitlabConfig;
+  /** null when the [gitlab] section is absent; only GitLab commands require it. */
+  gitlab: GitlabConfig | null;
   /** null when the [jira] section is absent: Jira is optional. */
   jira: JiraConfig | null;
   /** null when the [sonar] section is absent. */
@@ -64,6 +65,10 @@ export const DEFAULT_EXCLUDE = [
   "**/pnpm-lock.yaml",
   "**/gradle.lockfile",
   "**/*.min.js",
+  "**/*.map",
+  "**/*.snap",
+  "**/*.svg",
+  "**/*.md",
   "**/*.generated.*",
   "**/generated/**",
   "**/build/**",
@@ -123,8 +128,8 @@ export function parseConfig(text: string, file: string, env: Env): Config {
     "timeout_s",
     "concurrency",
   ]);
-  const gitlabT = requireTable(root, "gitlab");
-  checkKeys(gitlabT, "gitlab", ["url", "workspace"]);
+  const gitlabT = optionalTable(root, "gitlab");
+  if (gitlabT) checkKeys(gitlabT, "gitlab", ["url", "workspace"]);
   const jiraT = optionalTable(root, "jira");
   if (jiraT) checkKeys(jiraT, "jira", ["url", "key_pattern", "acceptance_criteria_field"]);
   const sonarT = optionalTable(root, "sonar");
@@ -146,10 +151,12 @@ export function parseConfig(text: string, file: string, env: Env): Config {
     throw new ConfigError("llm.max_output_tokens must be smaller than llm.max_context_tokens");
   }
 
-  const gitlab: GitlabConfig = {
-    url: serviceUrl(reqStr(gitlabT, "gitlab", "url"), "gitlab.url"),
-    workspace: expandHome(optStr(gitlabT, "gitlab", "workspace", "~/.cache/mr-reviewer/repos")),
-  };
+  const gitlab: GitlabConfig | null = gitlabT
+    ? {
+        url: serviceUrl(reqStr(gitlabT, "gitlab", "url"), "gitlab.url"),
+        workspace: expandHome(optStr(gitlabT, "gitlab", "workspace", "~/.cache/mr-reviewer/repos")),
+      }
+    : null;
 
   let jira: JiraConfig | null = null;
   if (jiraT) {
